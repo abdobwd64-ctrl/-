@@ -52,7 +52,8 @@ class ScraperEngine:
         if self.phase == 'discover':
             return 0
         if self.phase == 'scrape' and self.total > 0:
-            return (self.current / self.total) * 100
+            c = min(self.current, self.total)
+            return (c / self.total) * 100
         if self.phase == 'save':
             return 95
         if self.phase in ('done', 'pushed'):
@@ -121,37 +122,36 @@ class ScraperEngine:
     def _scrape_all(self):
         self.phase = 'scrape'
         self.current = 0
-        with ThreadPoolExecutor(max_workers=self.parallel) as executor:
-            futures = {}
-            for anime in self._animes:
-                if self._stop: return
-                futures[executor.submit(self._scrape_one, anime)] = anime
-            for future in as_completed(futures):
-                if self._stop: return
-                anime = futures[future]
-                i = self._animes.index(anime) + 1
+        self.done = 0
+        self.failed = 0
+        def _scrape_wrapper(anime):
+            if self._stop: return None
+            with self._lock:
+                self.current += 1
+                self.current_name = anime['name'][:45]
+            try:
+                ad = self._scrape_one(anime)
                 with self._lock:
-                    self.current = i
-                    self.current_name = anime['name'][:45]
-                try:
-                    ad = future.result()
-                    with self._lock:
-                        if ad is None:
-                            self.failed += 1
-                            self.message = f'❌ {anime["name"][:30]} فشل'
-                        elif ad == 'skipped':
-                            self.message = f'⏭ {anime["name"][:30]} مكتمل'
-                        elif ad == 'poster_only':
-                            self.message = f'🖼 {anime["name"][:30]} بوستر'
-                            self._push_incremental(f'🖼 بوستر — {anime["name"][:30]}')
-                        else:
-                            self._all_data.append(ad)
-                            self.done += 1
-                            self.message = f'✅ {self.done}/{self.total}'
-                except Exception as e:
-                    with self._lock:
+                    if ad is None:
                         self.failed += 1
-                        self.message = f'فشل: {anime["name"][:30]} - {str(e)[:60]}'
+                        self.message = f'❌ {anime["name"][:30]} فشل'
+                    elif ad == 'skipped':
+                        self.message = f'⏭ {anime["name"][:30]} مكتمل'
+                    elif ad == 'poster_only':
+                        self.message = f'🖼 {anime["name"][:30]} بوستر'
+                        self._push_incremental(f'🖼 بوستر — {anime["name"][:30]}')
+                    else:
+                        self._all_data.append(ad)
+                        self.done += 1
+                        self.message = f'✅ {self.done}/{self.total}'
+                return ad if isinstance(ad, dict) else None
+            except Exception as e:
+                with self._lock:
+                    self.failed += 1
+                    self.message = f'فشل: {anime["name"][:30]} - {str(e)[:60]}'
+                return None
+        with ThreadPoolExecutor(max_workers=self.parallel) as executor:
+            list(executor.map(_scrape_wrapper, self._animes))
 
     def _read_json_safe(self, path):
         for enc in ['utf-8', 'cp1256', 'latin-1']:
@@ -178,6 +178,7 @@ class ScraperEngine:
                 'poster': ad.get('poster', ''),
                 'genres': ad.get('genres', []), 'status': ad.get('status', ''),
                 'type': ad.get('type', ''), 'episodes_count': ad.get('episodes_count', '0'),
+                'season': ad.get('season', ''),
             }
             index_list.append(info)
             if ad.get('episodes'):
@@ -231,23 +232,29 @@ class ScraperEngine:
             latest = ref['object']['sha']
             base = requests.get(f'{api}/repos/{repo}/git/commits/{latest}', headers=headers).json()['tree']['sha']
 
-            files = {}
+            import base64
+            files = []
             for root, dirs, fs in os.walk(DATA):
                 for fn in fs:
                     full = os.path.join(root, fn)
                     rel = os.path.relpath(full, DIR).replace('\\', '/')
                     with open(full, 'rb') as f:
                         raw = f.read()
+                    if rel.endswith('.webp'):
+                        content_b64 = base64.b64encode(raw).decode('ascii')
+                        files.append({'path': rel, 'content': content_b64, 'encoding': 'base64'})
+                    else:
                         try:
-                            files[rel] = raw.decode('utf-8')
+                            text = raw.decode('utf-8')
                         except UnicodeDecodeError:
-                            files[rel] = raw.decode('cp1256', errors='replace')
+                            text = raw.decode('cp1256', errors='replace')
+                        files.append({'path': rel, 'content': text, 'encoding': 'utf-8'})
 
             blobs = []
-            for path, content in files.items():
+            for f in files:
                 r = requests.post(f'{api}/repos/{repo}/git/blobs',
-                    headers=headers, json={'content': content, 'encoding': 'utf-8'}).json()
-                blobs.append({'path': path, 'sha': r['sha'], 'mode': '100644', 'type': 'blob'})
+                    headers=headers, json={'content': f['content'], 'encoding': f['encoding']}).json()
+                blobs.append({'path': f['path'], 'sha': r['sha'], 'mode': '100644', 'type': 'blob'})
 
             tree = requests.post(f'{api}/repos/{repo}/git/trees',
                 headers=headers, json={'base_tree': base, 'tree': blobs}).json()
@@ -259,8 +266,10 @@ class ScraperEngine:
                 }).json()
             requests.patch(f'{api}/repos/{repo}/git/refs/heads/{branch}',
                 headers=headers, json={'sha': cm['sha'], 'force': False})
-        except:
-            pass
+        except Exception as e:
+            err = f'خطأ في الرفع: {e}'
+            self.message = err
+            print(err, file=sys.stderr)
 
     def _download_poster(self, aid, poster_url):
         if not poster_url or not poster_url.startswith('http'):
@@ -458,20 +467,29 @@ class ScraperEngine:
         commit_r = requests.get(f'{api}/repos/{repo}/git/commits/{latest_commit}', headers=headers)
         base_tree = commit_r.json()['tree']['sha']
 
-        files_to_push = {}
+        import base64
+        files_to_push = []
         for root, dirs, files in os.walk(DATA):
             for fn in files:
                 full = os.path.join(root, fn)
                 rel = os.path.relpath(full, DIR).replace('\\', '/')
                 with open(full, 'rb') as f:
-                    files_to_push[rel] = f.read().decode('utf-8')
+                    raw = f.read()
+                if rel.endswith('.webp'):
+                    files_to_push.append({'path': rel, 'content': base64.b64encode(raw).decode('ascii'), 'encoding': 'base64'})
+                else:
+                    try:
+                        text = raw.decode('utf-8')
+                    except UnicodeDecodeError:
+                        text = raw.decode('cp1256', errors='replace')
+                    files_to_push.append({'path': rel, 'content': text, 'encoding': 'utf-8'})
 
         blobs = []
-        for path, content in files_to_push.items():
+        for f in files_to_push:
             blob_r = requests.post(f'{api}/repos/{repo}/git/blobs',
-                headers=headers, json={'content': content, 'encoding': 'utf-8'})
+                headers=headers, json={'content': f['content'], 'encoding': f['encoding']})
             if blob_r.status_code == 201:
-                blobs.append({'path': path, 'sha': blob_r.json()['sha'],
+                blobs.append({'path': f['path'], 'sha': blob_r.json()['sha'],
                               'mode': '100644', 'type': 'blob'})
 
         tree_r = requests.post(f'{api}/repos/{repo}/git/trees',
