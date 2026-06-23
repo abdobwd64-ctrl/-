@@ -245,9 +245,14 @@ elif st.session_state.page == 'scraper':
     
     @st.cache_resource
     def get_engine():
-        return ScraperEngine(gh_token)
+        return ScraperEngine(gh_token, parallel=3)
     
     engine = get_engine()
+    
+    live_phases = ('scrape', 'discover', 'save')
+    # لو thread مات والطور لسه حي → ارجع idle
+    if engine.phase in live_phases and not (engine._thread and engine._thread.is_alive()):
+        engine.phase = 'idle'
     
     col_s1, col_s2, col_s3 = st.columns(3)
     with col_s1:
@@ -255,7 +260,7 @@ elif st.session_state.page == 'scraper':
             engine.start()
             st.rerun()
     with col_s2:
-        if engine.phase in ('scrape', 'discover', 'save') and st.button("⏹ إيقاف", width='stretch'):
+        if engine.phase in live_phases and st.button("⏹ إيقاف", width='stretch'):
             engine.stop()
             st.rerun()
     with col_s3:

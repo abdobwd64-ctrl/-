@@ -2,6 +2,7 @@
 # scraper_engine.py — محرك السحب المتقدم (يدعم Streamlit + CLI)
 import sys, os, json, time, re, threading, logging, random, io
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from PIL import Image
 
@@ -22,8 +23,9 @@ DATA = os.path.join(DIR, 'data')
 DELAY = 0.5
 
 class ScraperEngine:
-    def __init__(self, gh_token=''):
+    def __init__(self, gh_token='', parallel=3):
         self.gh_token = gh_token
+        self.parallel = parallel
         self.phase = 'idle'
         self.discovered = 0
         self.current = 0
@@ -41,6 +43,7 @@ class ScraperEngine:
         self.message = ''
         self._animes = []
         self._all_data = []
+        self._lock = threading.Lock()
         self._stop = False
         self._thread = None
 
@@ -118,27 +121,37 @@ class ScraperEngine:
     def _scrape_all(self):
         self.phase = 'scrape'
         self.current = 0
-        for i, anime in enumerate(self._animes, 1):
-            if self._stop: return
-            self.current = i
-            self.current_name = anime['name'][:45]
-            self.message = f'({i}/{self.total}) {self.current_name}'
-            try:
-                ad = self._scrape_one(anime)
-                if ad is None:
-                    self.failed += 1
-                elif ad == 'skipped':
-                    self.message = f'⏭ {anime["name"][:30]} مكتمل'
-                elif ad == 'poster_only':
-                    self.message = f'🖼 {anime["name"][:30]} بوستر'
-                    self._push_incremental(f'🖼 بوستر — {anime["name"][:30]}')
-                else:
-                    self._all_data.append(ad)
-                    self.done += 1
-            except Exception as e:
-                self.failed += 1
-                self.message = f'فشل: {anime["name"][:30]} - {str(e)[:60]}'
-            time.sleep(DELAY)
+        with ThreadPoolExecutor(max_workers=self.parallel) as executor:
+            futures = {}
+            for anime in self._animes:
+                if self._stop: return
+                futures[executor.submit(self._scrape_one, anime)] = anime
+            for future in as_completed(futures):
+                if self._stop: return
+                anime = futures[future]
+                i = self._animes.index(anime) + 1
+                with self._lock:
+                    self.current = i
+                    self.current_name = anime['name'][:45]
+                try:
+                    ad = future.result()
+                    with self._lock:
+                        if ad is None:
+                            self.failed += 1
+                            self.message = f'❌ {anime["name"][:30]} فشل'
+                        elif ad == 'skipped':
+                            self.message = f'⏭ {anime["name"][:30]} مكتمل'
+                        elif ad == 'poster_only':
+                            self.message = f'🖼 {anime["name"][:30]} بوستر'
+                            self._push_incremental(f'🖼 بوستر — {anime["name"][:30]}')
+                        else:
+                            self._all_data.append(ad)
+                            self.done += 1
+                            self.message = f'✅ {self.done}/{self.total}'
+                except Exception as e:
+                    with self._lock:
+                        self.failed += 1
+                        self.message = f'فشل: {anime["name"][:30]} - {str(e)[:60]}'
 
     def _read_json_safe(self, path):
         for enc in ['utf-8', 'cp1256', 'latin-1']:
@@ -254,7 +267,11 @@ class ScraperEngine:
             return poster_url
         local = os.path.join(DATA, 'posters', f'{aid}.webp')
         if os.path.exists(local):
-            return f'data/posters/{aid}.webp'
+            try:
+                Image.open(local).verify()
+                return f'data/posters/{aid}.webp'
+            except:
+                os.remove(local)
         try:
             r = requests.get(poster_url, timeout=15)
             img = Image.open(io.BytesIO(r.content))
