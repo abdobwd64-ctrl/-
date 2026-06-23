@@ -281,8 +281,9 @@ class ScraperEngine:
             except:
                 pass
 
-    def _mark_dirty(self, rel_path):
-        self._dirty.add(rel_path.replace('\\', '/'))
+    def _mark_dirty(self, file_path):
+        rp = os.path.relpath(file_path, DIR).replace('\\', '/')
+        self._dirty.add(rp)
 
     def _push_incremental(self, msg):
         if not self.gh_token:
