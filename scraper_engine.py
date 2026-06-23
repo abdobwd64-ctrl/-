@@ -140,8 +140,16 @@ class ScraperEngine:
                 self.message = f'فشل: {anime["name"][:30]} - {str(e)[:60]}'
             time.sleep(DELAY)
 
+    def _read_json_safe(self, path):
+        for enc in ['utf-8', 'cp1256', 'latin-1']:
+            try:
+                with open(path, 'r', encoding=enc) as f:
+                    return json.load(f)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+        return None
+
     def _update_indexes(self):
-        """توليد latest.json + popular.json من الملفات الموجودة"""
         latest, popular, index_list = [], [], []
         anime_dir = os.path.join(DATA, 'anime')
         if not os.path.isdir(anime_dir):
@@ -149,10 +157,8 @@ class ScraperEngine:
         for fn in os.listdir(anime_dir):
             if not fn.endswith('.json'):
                 continue
-            try:
-                with open(os.path.join(anime_dir, fn), 'r', encoding='utf-8') as f:
-                    ad = json.load(f)
-            except:
+            ad = self._read_json_safe(os.path.join(anime_dir, fn))
+            if not ad:
                 continue
             info = {
                 'id': ad.get('id', ''), 'title': ad.get('title', ''),
@@ -176,13 +182,12 @@ class ScraperEngine:
         latest.sort(key=lambda x: x.get('date', ''), reverse=True)
         popular.sort(key=lambda x: x['score'], reverse=True)
 
-        total_eps = 0
+        total_eps = sum(len(p.get('episodes', [])) for p in index_list) if False else 0
         for fn in os.listdir(anime_dir):
             if not fn.endswith('.json'): continue
-            try:
-                ad = json.load(open(os.path.join(anime_dir, fn), 'r', encoding='utf-8'))
+            ad = self._read_json_safe(os.path.join(anime_dir, fn))
+            if ad:
                 total_eps += len(ad.get('episodes', []))
-            except: pass
         for name, data in [
             ('latest.json', latest[:50]),
             ('all-animes.json', index_list),
@@ -219,7 +224,11 @@ class ScraperEngine:
                     full = os.path.join(root, fn)
                     rel = os.path.relpath(full, DIR).replace('\\', '/')
                     with open(full, 'rb') as f:
-                        files[rel] = f.read().decode('utf-8')
+                        raw = f.read()
+                        try:
+                            files[rel] = raw.decode('utf-8')
+                        except UnicodeDecodeError:
+                            files[rel] = raw.decode('cp1256', errors='replace')
 
             blobs = []
             for path, content in files.items():
@@ -266,12 +275,11 @@ class ScraperEngine:
         existing_eps = {}
         poster_ok = os.path.exists(poster_fp)
         if os.path.exists(fp):
-            try:
-                with open(fp, 'r', encoding='utf-8') as f:
-                    old_data = json.load(f)
+            old_data = self._read_json_safe(fp)
+            if old_data:
                 for ep in old_data.get('episodes', []):
                     existing_eps[str(ep.get('number', ''))] = ep
-            except:
+            else:
                 existing_eps = {}
 
         # سحب صفحة التفاصيل
