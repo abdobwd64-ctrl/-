@@ -140,9 +140,68 @@ class ScraperEngine:
                 self.message = f'فشل: {anime["name"][:30]} - {str(e)[:60]}'
             time.sleep(DELAY)
 
+    def _update_indexes(self):
+        """توليد latest.json + popular.json من الملفات الموجودة"""
+        latest, popular, index_list = [], [], []
+        anime_dir = os.path.join(DATA, 'anime')
+        if not os.path.isdir(anime_dir):
+            return
+        for fn in os.listdir(anime_dir):
+            if not fn.endswith('.json'):
+                continue
+            try:
+                with open(os.path.join(anime_dir, fn), 'r', encoding='utf-8') as f:
+                    ad = json.load(f)
+            except:
+                continue
+            info = {
+                'id': ad.get('id', ''), 'title': ad.get('title', ''),
+                'poster': ad.get('poster', ''),
+                'genres': ad.get('genres', []), 'status': ad.get('status', ''),
+                'type': ad.get('type', ''), 'episodes_count': ad.get('episodes_count', '0'),
+            }
+            index_list.append(info)
+            if ad.get('episodes'):
+                sorted_eps = sorted(ad['episodes'],
+                    key=lambda x: str(x.get('number', '0')), reverse=True)[:3]
+                for ep in sorted_eps:
+                    latest.append({
+                        'anime_id': ad['id'], 'anime_title': ad['title'],
+                        'anime_poster': ad['poster'], 'episode': ep['number'],
+                        'date': ep.get('date', ''),
+                    })
+            score = len(ad.get('episodes', [])) + len(ad.get('genres', []))
+            popular.append({**info, 'score': score})
+
+        latest.sort(key=lambda x: x.get('date', ''), reverse=True)
+        popular.sort(key=lambda x: x['score'], reverse=True)
+
+        total_eps = 0
+        for fn in os.listdir(anime_dir):
+            if not fn.endswith('.json'): continue
+            try:
+                ad = json.load(open(os.path.join(anime_dir, fn), 'r', encoding='utf-8'))
+                total_eps += len(ad.get('episodes', []))
+            except: pass
+        for name, data in [
+            ('latest.json', latest[:50]),
+            ('all-animes.json', index_list),
+            ('popular.json', [p for p in popular[:30]]),
+            ('meta.json', {
+                'total_anime': len(index_list), 'total_episodes': total_eps,
+                'last_updated': datetime.utcnow().isoformat(),
+            }),
+        ]:
+            try:
+                with open(os.path.join(DATA, name), 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+            except:
+                pass
+
     def _push_incremental(self, msg):
         if not self.gh_token:
             return
+        self._update_indexes()
         self.message = f'🔄 رفع إلى GitHub...'
         headers = {'Authorization': f'token {self.gh_token}', 'Accept': 'application/vnd.github.v3+json'}
         api = 'https://api.github.com'
