@@ -1,5 +1,9 @@
-import sys, os, json, time
+import sys, os, json, time, logging
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# إسكات كل الـ logs المزعجة
+for noisy in ['watchdog', 'urllib3', 'requests', 'streamlit', 'PIL']:
+    logging.getLogger(noisy).setLevel(logging.ERROR)
 
 from animelek_scraper import (
     logger, search_anime, get_homepage_pinned, get_anime_details,

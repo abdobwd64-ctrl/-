@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 # scraper_engine.py — محرك السحب المتقدم (يدعم Streamlit + CLI)
-import sys, os, json, time, re, threading, logging
+import sys, os, json, time, re, threading, logging, random
 from datetime import datetime
 import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# إسكات كل الـ logs المزعجة
+for noisy in ['watchdog', 'urllib3', 'requests', 'PIL']:
+    logging.getLogger(noisy).setLevel(logging.ERROR)
+
 from animelek_scraper import (
     BASE_URL, HEADERS, SESSION, safe_request, clean_url, extract_domain,
     get_homepage_pinned, search_anime, get_anime_details,
     get_episode_servers, get_episode_downloads
 )
-
-logging.getLogger('animelek').setLevel(logging.WARNING)
-logging.getLogger('urllib3').setLevel(logging.WARNING)
 
 DIR = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(DIR, 'data')
@@ -106,6 +108,7 @@ class ScraperEngine:
                 pass
 
         self._animes = [{'url': u, 'name': n} for u, n in known.items()]
+        random.shuffle(self._animes)
         self.discovered = len(self._animes)
         self.total = len(self._animes)
         self.message = f'تم اكتشاف {len(self._animes)} أنمي'
@@ -123,18 +126,15 @@ class ScraperEngine:
                 if ad:
                     self._all_data.append(ad)
                     self.done += 1
-                else:
-                    self.failed += 1
             except Exception as e:
                 self.failed += 1
                 self.message = f'فشل: {anime["name"][:30]} - {str(e)[:60]}'
             time.sleep(DELAY)
-            self._push_incremental(i, self.done + self.failed)
 
-    def _push_incremental(self, count, done):
+    def _push_incremental(self, msg):
         if not self.gh_token:
             return
-        self.message = f'🔄 رفع {done} أنمي إلى GitHub...'
+        self.message = f'🔄 رفع إلى GitHub...'
         headers = {'Authorization': f'token {self.gh_token}', 'Accept': 'application/vnd.github.v3+json'}
         api = 'https://api.github.com'
         repo = 'abdobwd64-ctrl/anime'
@@ -164,7 +164,7 @@ class ScraperEngine:
             now = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
             cm = requests.post(f'{api}/repos/{repo}/git/commits',
                 headers=headers, json={
-                    'message': f'📊 تحديث تدريجي ({done} أنمي) — {now}',
+                    'message': f'{msg} — {now}',
                     'tree': tree['sha'], 'parents': [latest],
                 }).json()
             requests.patch(f'{api}/repos/{repo}/git/refs/heads/{branch}',
@@ -258,6 +258,9 @@ class ScraperEngine:
             anime_data['episodes'] = eps_data
             with open(fp, 'w', encoding='utf-8') as f:
                 json.dump(anime_data, f, ensure_ascii=False, indent=2)
+
+            # رفع الحلقة على GitHub فوراً
+            self._push_incremental(f'🎬 الحلقة {ep_num} — {name[:30]}')
 
             time.sleep(DELAY)
 
