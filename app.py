@@ -249,21 +249,25 @@ elif st.session_state.page == 'scraper':
     
     engine = get_engine()
     
-    live_phases = ('scrape', 'discover', 'save')
+    live_phases = ('scrape', 'discover', 'save', 'check')
     # لو thread مات والطور لسه حي → ارجع idle
     if engine.phase in live_phases and not (engine._thread and engine._thread.is_alive()):
         engine.phase = 'idle'
     
-    col_s1, col_s2, col_s3 = st.columns(3)
+    col_s1, col_s2, col_s3, col_s4 = st.columns(4)
     with col_s1:
         if engine.phase == 'idle' and st.button("🚀 ابدأ السحب", type="primary", width='stretch'):
             engine.start()
             st.rerun()
     with col_s2:
+        if engine.phase == 'idle' and st.button("🔍 فحص الجديد", width='stretch'):
+            engine.start_check()
+            st.rerun()
+    with col_s3:
         if engine.phase in live_phases and st.button("⏹ إيقاف", width='stretch'):
             engine.stop()
             st.rerun()
-    with col_s3:
+    with col_s4:
         if engine.phase in ('done', 'pushed', 'error') and st.button("🔄 تصفير", width='stretch'):
             st.cache_resource.clear()
             st.rerun()
@@ -310,6 +314,14 @@ elif st.session_state.page == 'scraper':
         st.progress(0.95)
         st.info(engine.message)
         time.sleep(1)
+        st.rerun()
+    
+    elif engine.phase == 'check':
+        st.markdown(f"**🔍 فحص الحلقات الجديدة...**")
+        if engine.total > 0:
+            st.progress(min(engine.current / engine.total, 1.0))
+        st.info(engine.message)
+        time.sleep(1.5)
         st.rerun()
     
     elif engine.phase == 'pushed':

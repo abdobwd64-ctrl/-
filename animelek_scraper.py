@@ -304,6 +304,15 @@ def get_homepage_pinned():
         return []
     return parse_pinned_cards(resp.text)
 
+LATEST_LIST_URL = BASE_URL + '/%D9%82%D8%A7%D8%A6%D9%85%D8%A9-%D8%A7%D9%84%D8%AD%D9%84%D9%82%D8%A7%D8%AA/'
+
+def get_latest_episodes_page():
+    logger.info("Fetching latest episodes page")
+    resp = safe_request(LATEST_LIST_URL)
+    if resp is None:
+        return []
+    return parse_pinned_cards(resp.text)
+
 if __name__ == '__main__':
     action = sys.argv[1] if len(sys.argv) > 1 else 'pinned'
     if action == 'pinned':

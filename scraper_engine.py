@@ -68,6 +68,13 @@ class ScraperEngine:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
+    def start_check(self):
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop = False
+        self._thread = threading.Thread(target=self._run_check, daemon=True)
+        self._thread.start()
+
     def stop(self):
         self._stop = True
 
@@ -444,6 +451,112 @@ class ScraperEngine:
         if os.path.exists(poster_fp):
             self._mark_dirty(poster_fp)
         return anime_data
+
+    def _check_new(self, entries):
+        """Check a batch of pinned entries: scrape any new anime/episodes/servers."""
+        from animelek_scraper import get_episode_servers, get_episode_downloads
+        new_anime = 0
+        new_eps = 0
+        new_servers = 0
+        for ep in entries:
+            if self._stop:
+                return
+            anime_url = ep.get('anime_url', '')
+            ep_url = ep.get('episode_url', '')
+            if not anime_url:
+                continue
+            aid = anime_url.rstrip('/').split('/')[-1]
+            fp = os.path.join(DATA, 'anime', f'{aid}.json')
+            old_data = None
+            existing_eps = {}
+            if os.path.exists(fp):
+                old_data = self._read_json_safe(fp)
+                if old_data:
+                    for e in old_data.get('episodes', []):
+                        existing_eps[str(e.get('number', ''))] = e
+            ep_num = ''
+            if '/episode/' in ep_url:
+                ep_num = ep_url.rstrip('/').rsplit('-', 1)[-1]
+            if not old_data:
+                ad = self._scrape_one(anime_url)
+                if ad and isinstance(ad, dict):
+                    new_anime += 1
+                    self._all_data.append(ad)
+                    self.done += 1
+                continue
+            if ep_num and ep_num not in existing_eps:
+                try:
+                    srv, pub_date = get_episode_servers(ep_url)
+                    dls = get_episode_downloads(ep_url)
+                    if not srv and not dls:
+                        continue
+                    old_data['episodes'].append({
+                        'number': ep_num,
+                        'title': ep.get('episode_name', ''),
+                        'date': pub_date,
+                        'servers': [{'name': s['name'], 'embed_url': s['embed_url']} for s in srv],
+                        'downloads': [{'server': d['server'], 'quality': d['quality'],
+                                        'language': d['language'], 'url': d['url']} for d in dls],
+                    })
+                    old_data['last_updated'] = datetime.utcnow().isoformat()
+                    with open(fp, 'w', encoding='utf-8') as f:
+                        json.dump(old_data, f, ensure_ascii=False, indent=2)
+                    self._mark_dirty(fp)
+                    new_eps += 1
+                    self.message = f'🆕 حلقة جديدة: {old_data.get("title",aid)} - الحلقة {ep_num}'
+                except:
+                    continue
+            elif ep_num and ep_num in existing_eps:
+                old_servers = existing_eps[ep_num].get('servers', [])
+                old_count = len(old_servers)
+                try:
+                    srv, pub_date = get_episode_servers(ep_url)
+                    if len(srv) > old_count:
+                        existing_eps[ep_num]['servers'] = [
+                            {'name': s['name'], 'embed_url': s['embed_url']} for s in srv
+                        ]
+                        if pub_date:
+                            existing_eps[ep_num]['date'] = pub_date
+                        old_data['last_updated'] = datetime.utcnow().isoformat()
+                        with open(fp, 'w', encoding='utf-8') as f:
+                            json.dump(old_data, f, ensure_ascii=False, indent=2)
+                        self._mark_dirty(fp)
+                        new_servers += 1
+                        self.message = f'🆕 سيرفر جديد: {old_data.get("title",aid)} - الحلقة {ep_num}'
+                except:
+                    pass
+            time.sleep(DELAY)
+        self._push_incremental(f'🔄 فحص: {new_anime} أنمي + {new_eps} حلقة + {new_servers} سيرفر')
+
+    def _run_check(self):
+        """Periodically check latest episodes in batches of 5."""
+        from animelek_scraper import get_latest_episodes_page
+        os.makedirs(DATA, exist_ok=True)
+        os.makedirs(os.path.join(DATA, 'anime'), exist_ok=True)
+        os.makedirs(os.path.join(DATA, 'posters'), exist_ok=True)
+        self.phase = 'check'
+        self.message = 'جاري فحص الحلقات الجديدة...'
+        try:
+            all_eps = get_latest_episodes_page()
+            if not all_eps:
+                self.message = 'لا توجد حلقات جديدة'
+                self.phase = 'idle'
+                return
+            total = len(all_eps)
+            self.total = total
+            self.current = 0
+            for start in range(0, total, 5):
+                if self._stop:
+                    return
+                batch = all_eps[start:start+5]
+                self.current = start + len(batch)
+                self.message = f'فحص {start+1}-{min(start+5,total)} من {total}...'
+                self._check_new(batch)
+            self.message = f'✅ تم فحص {total} حلقة'
+            self.phase = 'idle'
+        except Exception as e:
+            self.message = f'خطأ في الفحص: {e}'
+            self.phase = 'idle'
 
     def _save_indexes(self):
         self.phase = 'save'
