@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # scraper_engine.py — محرك السحب المتقدم (يدعم Streamlit + CLI)
-import sys, os, json, time, re, threading, logging, random
+import sys, os, json, time, re, threading, logging, random, io
 from datetime import datetime
 import requests
+from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -68,6 +69,7 @@ class ScraperEngine:
     def _run(self):
         os.makedirs(DATA, exist_ok=True)
         os.makedirs(os.path.join(DATA, 'anime'), exist_ok=True)
+        os.makedirs(os.path.join(DATA, 'posters'), exist_ok=True)
 
         try:
             self._discover()
@@ -123,7 +125,14 @@ class ScraperEngine:
             self.message = f'({i}/{self.total}) {self.current_name}'
             try:
                 ad = self._scrape_one(anime)
-                if ad:
+                if ad is None:
+                    self.failed += 1
+                elif ad == 'skipped':
+                    self.message = f'⏭ {anime["name"][:30]} مكتمل'
+                elif ad == 'poster_only':
+                    self.message = f'🖼 {anime["name"][:30]} بوستر'
+                    self._push_incremental(f'🖼 بوستر — {anime["name"][:30]}')
+                else:
                     self._all_data.append(ad)
                     self.done += 1
             except Exception as e:
@@ -172,59 +181,79 @@ class ScraperEngine:
         except:
             pass
 
+    def _download_poster(self, aid, poster_url):
+        if not poster_url or not poster_url.startswith('http'):
+            return poster_url
+        local = os.path.join(DATA, 'posters', f'{aid}.webp')
+        if os.path.exists(local):
+            return f'data/posters/{aid}.webp'
+        try:
+            r = requests.get(poster_url, timeout=15)
+            img = Image.open(io.BytesIO(r.content))
+            img.save(local, 'WEBP', quality=85)
+            return f'data/posters/{aid}.webp'
+        except:
+            return poster_url
+
     def _scrape_one(self, anime):
         url = anime['url']
         name = anime['name']
         aid = url.rstrip('/').split('/')[-1]
         fp = os.path.join(DATA, 'anime', f'{aid}.json')
+        poster_fp = os.path.join(DATA, 'posters', f'{aid}.webp')
 
-        # تحقق إذا كان الأنمي مسحوب قبل كده
+        # تحميل البيانات القديمة إن وجدت
+        old_data = None
         existing_eps = {}
+        poster_ok = os.path.exists(poster_fp)
         if os.path.exists(fp):
             try:
                 with open(fp, 'r', encoding='utf-8') as f:
-                    old = json.load(f)
-                for ep in old.get('episodes', []):
+                    old_data = json.load(f)
+                for ep in old_data.get('episodes', []):
                     existing_eps[str(ep.get('number', ''))] = ep
-                self.message = f'استئناف: {name} ({len(existing_eps)} حلقة موجودة)'
             except:
                 existing_eps = {}
 
+        # سحب صفحة التفاصيل
         det = get_anime_details(url)
         if not det:
             return None
 
         ep_list = det.get('episodes_list', [])
-        eps_data = []
-        self.ep_total = len(ep_list)
-        self.ep_progress = 0
+        total_on_site = len(ep_list)
+        total_old = len(existing_eps)
+        self.ep_total = total_on_site
 
-        # هيكل البيانات الأساسي
-        anime_data = {
-            'id': aid,
-            'title': det.get('title', name),
-            'url': url,
-            'poster': det.get('image', ''),
-            'status': det.get('status', ''),
-            'type': det.get('type', ''),
-            'episodes_count': det.get('episodes', str(self.ep_total)),
-            'start_date': det.get('start_date', ''),
-            'season': det.get('season', ''),
-            'genres': det.get('genres', []),
-            'story': det.get('story', ''),
-            'episodes': [],
-            'last_updated': datetime.utcnow().isoformat(),
-        }
+        poster_url = det.get('image', '')
+
+        # ذكي: لو كل حاجه موجودة → تخطي
+        if total_old >= total_on_site and poster_ok and old_data:
+            self.message = f'⏭ {name}: مكتمل ({total_old} حلقة + WebP)'
+            return 'skipped'
+
+        # ذكي: لو الصورة بس ناقصة → نزلها وخلاص
+        if total_old >= total_on_site and not poster_ok and old_data:
+            poster_local = self._download_poster(aid, poster_url)
+            old_data['poster'] = poster_local
+            old_data['last_updated'] = datetime.utcnow().isoformat()
+            with open(fp, 'w', encoding='utf-8') as f:
+                json.dump(old_data, f, ensure_ascii=False, indent=2)
+            self.message = f'🖼 {name}: تم تحديث البوستر'
+            return 'poster_only'
+
+        # سحب كامل أو استئناف
+        eps_data = []
+        for ep in old_data.get('episodes', []) if old_data else []:
+            eps_data.append(ep)
+        self.ep_progress = len(eps_data)
 
         for idx, ep in enumerate(ep_list, 1):
             if self._stop: return None
-            self.ep_progress = idx
             ep_num = str(ep.get('number', str(idx)))
-
-            # تخطي الحلقات الموجودة
             if ep_num in existing_eps:
-                eps_data.append(existing_eps[ep_num])
                 continue
+            self.ep_progress = idx
 
             ep_url = ep.get('url', '')
             if not ep_url:
@@ -244,33 +273,42 @@ class ScraperEngine:
             self.ep_servers = len(srv)
             self.ep_dls = len(dls)
 
-            ep_data = {
+            eps_data.append({
                 'number': ep_num,
                 'title': ep.get('title', ''),
                 'date': pub_date,
                 'servers': [{'name': s['name'], 'embed_url': s['embed_url']} for s in srv],
                 'downloads': [{'server': d['server'], 'quality': d['quality'],
                                 'language': d['language'], 'url': d['url']} for d in dls],
-            }
-            eps_data.append(ep_data)
+            })
 
-            # حفظ بعد كل حلقة (حماية من الفشل)
-            anime_data['episodes'] = eps_data
+            anime_data = {
+                'id': aid, 'title': det.get('title', name), 'url': url,
+                'poster': self._download_poster(aid, poster_url),
+                'status': det.get('status', ''), 'type': det.get('type', ''),
+                'episodes_count': det.get('episodes', str(total_on_site)),
+                'start_date': det.get('start_date', ''), 'season': det.get('season', ''),
+                'genres': det.get('genres', []), 'story': det.get('story', ''),
+                'episodes': eps_data,
+                'last_updated': datetime.utcnow().isoformat(),
+            }
             with open(fp, 'w', encoding='utf-8') as f:
                 json.dump(anime_data, f, ensure_ascii=False, indent=2)
-
-            # رفع الحلقة على GitHub فوراً
             self._push_incremental(f'🎬 الحلقة {ep_num} — {name[:30]}')
-
             time.sleep(DELAY)
 
-        anime_data['episodes'] = eps_data
+        anime_data = {
+            'id': aid, 'title': det.get('title', name), 'url': url,
+            'poster': self._download_poster(aid, poster_url),
+            'status': det.get('status', ''), 'type': det.get('type', ''),
+            'episodes_count': det.get('episodes', str(total_on_site)),
+            'start_date': det.get('start_date', ''), 'season': det.get('season', ''),
+            'genres': det.get('genres', []), 'story': det.get('story', ''),
+            'episodes': eps_data,
+            'last_updated': datetime.utcnow().isoformat(),
+        }
         with open(fp, 'w', encoding='utf-8') as f:
             json.dump(anime_data, f, ensure_ascii=False, indent=2)
-
-        skipped = len(existing_eps)
-        if skipped:
-            self.message = f'{name}: {skipped} حلقة موجودة تم تخطيها'
         return anime_data
 
     def _save_indexes(self):
