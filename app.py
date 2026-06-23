@@ -1,10 +1,11 @@
-import sys, os
+import sys, os, json, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from animelek_scraper import (
     logger, search_anime, get_homepage_pinned, get_anime_details,
     get_episode_servers, get_episode_downloads, BASE_URL
 )
+from scraper_engine import ScraperEngine
 
 import streamlit as st
 
@@ -25,6 +26,7 @@ st.markdown("""
         margin: 4px; font-weight: bold;
     }
     .server-btn:hover { background: #1557b0; }
+    .scraper-progress { font-family: monospace; font-size: 0.9rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -44,18 +46,21 @@ with col1:
 with col2:
     go_search = st.button("بحث", type="primary", use_container_width=True)
 
-left, mid, right = st.columns(3)
-with left:
+b1, b2, b3, b4 = st.columns(4)
+with b1:
     if st.button("🏠 الرئيسية", use_container_width=True):
         st.session_state.page = 'home'
         st.rerun()
-with mid:
+with b2:
     if st.button("📌 أحدث الحلقات", use_container_width=True):
         st.session_state.page = 'latest'
         st.rerun()
-with right:
+with b3:
     if st.button("🔍 بحث", use_container_width=True):
         st.session_state.page = 'search'
+with b4:
+    if st.button("🤖 ساحب", use_container_width=True):
+        st.session_state.page = 'scraper'
 
 if go_search or (query and st.session_state.page == 'search'):
     st.session_state.page = 'search'
@@ -223,3 +228,93 @@ elif st.session_state.page == 'episode':
         if st.button("🔙 رجوع", use_container_width=True):
             st.session_state.page = 'detail'
             st.rerun()
+
+# ===== SCRAPER =====
+elif st.session_state.page == 'scraper':
+    st.subheader("🤖 ساحب الأنمي من AnimeLek.top")
+    
+    try:
+        gh_token = os.environ.get('GH_TOKEN') or st.secrets.get('GH_TOKEN', '')
+    except:
+        gh_token = os.environ.get('GH_TOKEN', '')
+    
+    @st.cache_resource
+    def get_engine():
+        return ScraperEngine(gh_token)
+    
+    engine = get_engine()
+    
+    col_s1, col_s2, col_s3 = st.columns(3)
+    with col_s1:
+        if engine.phase == 'idle' and st.button("🚀 ابدأ السحب", type="primary", use_container_width=True):
+            engine.start()
+            st.rerun()
+    with col_s2:
+        if engine.phase in ('scrape', 'discover', 'save') and st.button("⏹ إيقاف", use_container_width=True):
+            engine.stop()
+            st.rerun()
+    with col_s3:
+        if engine.phase in ('done', 'pushed', 'error') and st.button("🔄 تصفير", use_container_width=True):
+            st.cache_resource.clear()
+            st.rerun()
+    
+    st.divider()
+    
+    if engine.phase == 'idle':
+        st.info("اضغط 'ابدأ السحب' لبدء سحب كل الأنمي من AnimeLek.top وحفظه في GitHub")
+    
+    elif engine.phase == 'discover':
+        st.markdown(f"**🔍 المرحلة 1/4:** اكتشاف الأنمي...")
+        st.progress(0)
+        st.info("جاري البحث في الموقع...")
+        time.sleep(1.5)
+        st.rerun()
+    
+    elif engine.phase == 'scrape':
+        pct = engine.overall_pct
+        st.markdown(f"**📥 المرحلة 2/4:** سحب التفاصيل والحلقات")
+        st.progress(pct / 100)
+        
+        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+        with col_m1: st.metric("تم", engine.done)
+        with col_m2: st.metric("فشل", engine.failed)
+        with col_m3: st.metric("حلقات", engine.total_eps)
+        with col_m4: st.metric("سيرفرات", engine.total_servers)
+        
+        bar_len = 25
+        filled = int(bar_len * engine.current / engine.total) if engine.total > 0 else 0
+        bar = '█' * filled + '░' * (bar_len - filled)
+        st.code(f"[{bar}] {engine.current}/{engine.total} ({engine.overall_pct:.0f}%) — {engine.current_name}")
+        
+        if engine.ep_total > 0:
+            ep_filled = int(bar_len * engine.ep_progress / engine.ep_total)
+            ep_bar = '█' * ep_filled + '░' * (bar_len - ep_filled)
+            st.code(f"     └─ حلقات [{ep_bar}] {engine.ep_progress}/{engine.ep_total} | {engine.ep_servers} سيرفر | {engine.ep_dls} تحميلة")
+        
+        st.caption(f"{engine.message}")
+        time.sleep(1.5)
+        st.rerun()
+    
+    elif engine.phase == 'save':
+        st.markdown(f"**💾 المرحلة 3/4:** حفظ الفهارس ورفع إلى GitHub...")
+        st.progress(0.95)
+        st.info(engine.message)
+        time.sleep(1)
+        st.rerun()
+    
+    elif engine.phase == 'pushed':
+        st.success("✅ **تم بنجاح!**")
+        st.balloons()
+        col_f1, col_f2, col_f3 = st.columns(3)
+        with col_f1: st.metric("أنمي", engine.done)
+        with col_f2: st.metric("حلقات", engine.total_eps)
+        with col_f3: st.metric("سيرفرات", engine.total_servers)
+        st.code(f"📥 تحميلات: {engine.total_dls}")
+        st.markdown(f"_{engine.message}_")
+    
+    elif engine.phase == 'error':
+        st.error(f"❌ خطأ: {engine.message}")
+    
+    elif engine.phase == 'done':
+        st.warning(f"⚠️ {engine.message}")
+        st.code(f"تم: {engine.done} | فشل: {engine.failed} | حلقات: {engine.total_eps}")
