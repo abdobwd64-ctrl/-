@@ -46,6 +46,7 @@ class ScraperEngine:
         self._lock = threading.Lock()
         self._stop = False
         self._thread = None
+        self._dirty = set()
 
     @property
     def overall_pct(self):
@@ -235,10 +236,16 @@ class ScraperEngine:
             except:
                 pass
 
+    def _mark_dirty(self, rel_path):
+        self._dirty.add(rel_path.replace('\\', '/'))
+
     def _push_incremental(self, msg):
         if not self.gh_token:
             return
         self._update_indexes()
+        # mark index files as dirty
+        for idx_name in ('latest.json', 'all-animes.json', 'popular.json', 'meta.json'):
+            self._dirty.add(f'data/{idx_name}')
         self.message = f'🔄 رفع إلى GitHub...'
         headers = {'Authorization': f'token {self.gh_token}', 'Accept': 'application/vnd.github.v3+json'}
         api = 'https://api.github.com'
@@ -252,21 +259,22 @@ class ScraperEngine:
 
             import base64
             files = []
-            for root, dirs, fs in os.walk(DATA):
-                for fn in fs:
-                    full = os.path.join(root, fn)
-                    rel = os.path.relpath(full, DIR).replace('\\', '/')
-                    with open(full, 'rb') as f:
-                        raw = f.read()
-                    if rel.endswith('.webp'):
-                        content_b64 = base64.b64encode(raw).decode('ascii')
-                        files.append({'path': rel, 'content': content_b64, 'encoding': 'base64'})
-                    else:
-                        try:
-                            text = raw.decode('utf-8')
-                        except UnicodeDecodeError:
-                            text = raw.decode('cp1256', errors='replace')
-                        files.append({'path': rel, 'content': text, 'encoding': 'utf-8'})
+            for rel in sorted(self._dirty):
+                full = os.path.join(DIR, rel)
+                if not os.path.exists(full):
+                    continue
+                with open(full, 'rb') as f:
+                    raw = f.read()
+                if rel.endswith('.webp'):
+                    content_b64 = base64.b64encode(raw).decode('ascii')
+                    files.append({'path': rel, 'content': content_b64, 'encoding': 'base64'})
+                else:
+                    try:
+                        text = raw.decode('utf-8')
+                    except UnicodeDecodeError:
+                        text = raw.decode('cp1256', errors='replace')
+                    files.append({'path': rel, 'content': text, 'encoding': 'utf-8'})
+            self._dirty.clear()
 
             blobs = []
             for f in files:
@@ -356,6 +364,9 @@ class ScraperEngine:
             old_data['last_updated'] = datetime.utcnow().isoformat()
             with open(fp, 'w', encoding='utf-8') as f:
                 json.dump(old_data, f, ensure_ascii=False, indent=2)
+            self._mark_dirty(fp)
+            if os.path.exists(poster_fp):
+                self._mark_dirty(poster_fp)
             self.message = f'🖼 {name}: تم تحديث البوستر'
             return 'poster_only'
 
@@ -411,6 +422,9 @@ class ScraperEngine:
             }
             with open(fp, 'w', encoding='utf-8') as f:
                 json.dump(anime_data, f, ensure_ascii=False, indent=2)
+            self._mark_dirty(fp)
+            if os.path.exists(poster_fp):
+                self._mark_dirty(poster_fp)
             self._push_incremental(f'🎬 الحلقة {ep_num} — {name[:30]}')
             time.sleep(DELAY)
 
@@ -426,6 +440,9 @@ class ScraperEngine:
         }
         with open(fp, 'w', encoding='utf-8') as f:
             json.dump(anime_data, f, ensure_ascii=False, indent=2)
+        self._mark_dirty(fp)
+        if os.path.exists(poster_fp):
+            self._mark_dirty(poster_fp)
         return anime_data
 
     def _save_indexes(self):
