@@ -162,6 +162,22 @@ class ScraperEngine:
                 continue
         return None
 
+    def _parse_arabic_date(self, date_str):
+        if not date_str:
+            return ''
+        months = {
+            'يناير':'01','فبراير':'02','مارس':'03','أبريل':'04','إبريل':'04',
+            'مايو':'05','يونيو':'06','يوليو':'07','أغسطس':'08','غشت':'08',
+            'سبتمبر':'09','أكتوبر':'10','نوفمبر':'11','ديسمبر':'12',
+        }
+        import re
+        m = re.match(r'(\d+)\s+([^,\s]+),?\s*(\d+)', date_str)
+        if m:
+            day, month_ar, year = m.group(1), m.group(2), m.group(3)
+            month_num = months.get(month_ar, '01')
+            return f'{year}-{month_num}-{int(day):02d}'
+        return date_str
+
     def _update_indexes(self):
         latest, popular, index_list = [], [], []
         anime_dir = os.path.join(DATA, 'anime')
@@ -185,15 +201,17 @@ class ScraperEngine:
                 sorted_eps = sorted(ad['episodes'],
                     key=lambda x: str(x.get('number', '0')), reverse=True)[:3]
                 for ep in sorted_eps:
+                    d = ep.get('date', '')
                     latest.append({
                         'anime_id': ad['id'], 'anime_title': ad['title'],
                         'anime_poster': ad['poster'], 'episode': ep['number'],
-                        'date': ep.get('date', ''),
+                        'date': d,
+                        'date_sort': self._parse_arabic_date(d),
                     })
             score = len(ad.get('episodes', [])) + len(ad.get('genres', []))
             popular.append({**info, 'score': score})
 
-        latest.sort(key=lambda x: x.get('date', ''), reverse=True)
+        latest.sort(key=lambda x: x.get('date_sort', ''), reverse=True)
         popular.sort(key=lambda x: x['score'], reverse=True)
 
         total_eps = sum(len(p.get('episodes', [])) for p in index_list) if False else 0
@@ -252,20 +270,26 @@ class ScraperEngine:
 
             blobs = []
             for f in files:
-                r = requests.post(f'{api}/repos/{repo}/git/blobs',
-                    headers=headers, json={'content': f['content'], 'encoding': f['encoding']}).json()
-                blobs.append({'path': f['path'], 'sha': r['sha'], 'mode': '100644', 'type': 'blob'})
+                br = requests.post(f'{api}/repos/{repo}/git/blobs',
+                    headers=headers, json={'content': f['content'], 'encoding': f['encoding']})
+                if br.status_code != 201:
+                    raise Exception(f'blob {f["path"]}: {br.status_code} {br.text[:100]}')
+                blobs.append({'path': f['path'], 'sha': br.json()['sha'], 'mode': '100644', 'type': 'blob'})
 
-            tree = requests.post(f'{api}/repos/{repo}/git/trees',
-                headers=headers, json={'base_tree': base, 'tree': blobs}).json()
+            tr = requests.post(f'{api}/repos/{repo}/git/trees',
+                headers=headers, json={'base_tree': base, 'tree': blobs})
+            if tr.status_code != 201:
+                raise Exception(f'tree: {tr.status_code} {tr.text[:100]}')
             now = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
-            cm = requests.post(f'{api}/repos/{repo}/git/commits',
+            cr = requests.post(f'{api}/repos/{repo}/git/commits',
                 headers=headers, json={
                     'message': f'{msg} — {now}',
-                    'tree': tree['sha'], 'parents': [latest],
-                }).json()
+                    'tree': tr.json()['sha'], 'parents': [latest],
+                })
+            if cr.status_code != 201:
+                raise Exception(f'commit: {cr.status_code} {cr.text[:100]}')
             requests.patch(f'{api}/repos/{repo}/git/refs/heads/{branch}',
-                headers=headers, json={'sha': cm['sha'], 'force': False})
+                headers=headers, json={'sha': cr.json()['sha'], 'force': False})
         except Exception as e:
             err = f'خطأ في الرفع: {e}'
             self.message = err
