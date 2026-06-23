@@ -2,7 +2,8 @@ import sys, os, json, time, logging
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # إسكات كل الـ logs المزعجة
-for noisy in ['watchdog', 'urllib3', 'requests', 'streamlit', 'PIL']:
+logging.getLogger().setLevel(logging.ERROR)
+for noisy in ['watchdog', 'urllib3', 'requests', 'streamlit', 'PIL', 'animelek']:
     logging.getLogger(noisy).setLevel(logging.ERROR)
 
 from animelek_scraper import (
@@ -48,22 +49,22 @@ col1, col2 = st.columns([3, 1])
 with col1:
     query = st.text_input("🔍", placeholder="اسم الأنمي...", label_visibility="collapsed")
 with col2:
-    go_search = st.button("بحث", type="primary", use_container_width=True)
+    go_search = st.button("بحث", type="primary", width='stretch')
 
 b1, b2, b3, b4 = st.columns(4)
 with b1:
-    if st.button("🏠 الرئيسية", use_container_width=True):
+    if st.button("🏠 الرئيسية", width='stretch'):
         st.session_state.page = 'home'
         st.rerun()
 with b2:
-    if st.button("📌 أحدث الحلقات", use_container_width=True):
+    if st.button("📌 أحدث الحلقات", width='stretch'):
         st.session_state.page = 'latest'
         st.rerun()
 with b3:
-    if st.button("🔍 بحث", use_container_width=True):
+    if st.button("🔍 بحث", width='stretch'):
         st.session_state.page = 'search'
 with b4:
-    if st.button("🤖 ساحب", use_container_width=True):
+    if st.button("🤖 ساحب", width='stretch'):
         st.session_state.page = 'scraper'
 
 if go_search or (query and st.session_state.page == 'search'):
@@ -86,10 +87,10 @@ if st.session_state.page == 'home':
     for i, ep in enumerate(top_anime):
         with cols[i % 4]:
             if ep.get('image'):
-                st.image(ep['image'], use_container_width=True)
+                st.image(ep['image'], width='stretch')
             st.markdown(f"**{ep['anime_name'][:35]}**")
             st.caption(ep['episode_name'])
-            if st.button("📄", key=f"h_{i}", use_container_width=True):
+            if st.button("📄", key=f"h_{i}", width='stretch'):
                 st.session_state.detail_url = ep['anime_url']
                 st.session_state.page = 'detail'
                 st.rerun()
@@ -108,12 +109,12 @@ elif st.session_state.page == 'latest':
         with col_b:
             st.markdown(f"**{ep['anime_name']}**  \n{ep['episode_name']}")
         with col_c:
-            if st.button("📄 التفاصيل", key=f"l_{i}", use_container_width=True):
+            if st.button("📄 التفاصيل", key=f"l_{i}", width='stretch'):
                 st.session_state.detail_url = ep['anime_url']
                 st.session_state.page = 'detail'
                 st.rerun()
         with col_d:
-            if st.button("▶ المشاهدة", key=f"le_{i}", use_container_width=True):
+            if st.button("▶ المشاهدة", key=f"le_{i}", width='stretch'):
                 st.session_state.episode_url = ep['episode_url']
                 st.session_state.page = 'episode'
                 st.rerun()
@@ -131,10 +132,10 @@ elif st.session_state.page == 'search':
             for i, r in enumerate(results):
                 with cols[i % 3]:
                     if r.get('image'):
-                        st.image(r['image'], use_container_width=True)
+                        st.image(r['image'], width='stretch')
                     st.markdown(f"**{r['name'][:50]}**")
                     st.caption(f"{r['type']} {r['year']}")
-                    if st.button("📄", key=f"s_{i}", use_container_width=True):
+                    if st.button("📄", key=f"s_{i}", width='stretch'):
                         st.session_state.detail_url = r['url']
                         st.session_state.page = 'detail'
                         st.rerun()
@@ -157,11 +158,11 @@ elif st.session_state.page == 'detail':
             left_col, right_col = st.columns([1, 2])
             with left_col:
                 if d.get('image'):
-                    st.image(d['image'], use_container_width=True)
+                    st.image(d['image'], width='stretch')
                 if d.get('episodes_list'):
                     st.markdown("### 📺 الحلقات")
                     for ep in d['episodes_list']:
-                        if st.button(ep['title'][:25], key=f"ep_{ep['number']}", use_container_width=True):
+                        if st.button(ep['title'][:25], key=f"ep_{ep['number']}", width='stretch'):
                             st.session_state.episode_url = ep['url']
                             st.session_state.page = 'episode'
                             st.rerun()
@@ -179,7 +180,7 @@ elif st.session_state.page == 'detail':
                 st.markdown("### 📖 القصة")
                 st.markdown(d['story'])
             st.divider()
-            if st.button("🔙 رجوع", use_container_width=True):
+            if st.button("🔙 رجوع", width='stretch'):
                 st.session_state.page = 'home'
                 st.rerun()
 
@@ -229,7 +230,7 @@ elif st.session_state.page == 'episode':
         else:
             st.info("لا توجد روابط تحميل متاحة")
 
-        if st.button("🔙 رجوع", use_container_width=True):
+        if st.button("🔙 رجوع", width='stretch'):
             st.session_state.page = 'detail'
             st.rerun()
 
@@ -250,15 +251,15 @@ elif st.session_state.page == 'scraper':
     
     col_s1, col_s2, col_s3 = st.columns(3)
     with col_s1:
-        if engine.phase == 'idle' and st.button("🚀 ابدأ السحب", type="primary", use_container_width=True):
+        if engine.phase == 'idle' and st.button("🚀 ابدأ السحب", type="primary", width='stretch'):
             engine.start()
             st.rerun()
     with col_s2:
-        if engine.phase in ('scrape', 'discover', 'save') and st.button("⏹ إيقاف", use_container_width=True):
+        if engine.phase in ('scrape', 'discover', 'save') and st.button("⏹ إيقاف", width='stretch'):
             engine.stop()
             st.rerun()
     with col_s3:
-        if engine.phase in ('done', 'pushed', 'error') and st.button("🔄 تصفير", use_container_width=True):
+        if engine.phase in ('done', 'pushed', 'error') and st.button("🔄 تصفير", width='stretch'):
             st.cache_resource.clear()
             st.rerun()
     
