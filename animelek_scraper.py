@@ -4,6 +4,7 @@ import logging
 import re
 import sys
 import os
+import time
 import urllib.parse
 
 logging.basicConfig(
@@ -20,16 +21,21 @@ HEADERS = {
 SESSION = requests.Session()
 SESSION.headers.update(HEADERS)
 
-def safe_request(url, timeout=15):
-    logger.debug(f"Request: {url}")
-    try:
-        resp = SESSION.get(url, timeout=timeout)
-        logger.debug(f"Response: {resp.status_code}, {len(resp.text)}b")
-        resp.raise_for_status()
-        return resp
-    except Exception as e:
-        logger.error(f"Failed: {url} - {e}")
-        return None
+def safe_request(url, timeout=30, retries=2):
+    for attempt in range(retries + 1):
+        try:
+            resp = SESSION.get(url, timeout=timeout)
+            logger.debug(f"Response: {resp.status_code}, {len(resp.text)}b")
+            resp.raise_for_status()
+            return resp
+        except Exception as e:
+            if attempt < retries:
+                wait = (attempt + 1) * 3
+                logger.warning(f"Retry {attempt+1}/{retries} in {wait}s: {url} - {e}")
+                time.sleep(wait)
+            else:
+                logger.error(f"Failed: {url} - {e}")
+    return None
 
 def clean_url(url):
     if not url.startswith('http'):
