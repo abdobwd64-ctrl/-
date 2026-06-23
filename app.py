@@ -3,7 +3,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from animelek_scraper import (
     logger, search_anime, get_homepage_pinned, get_anime_details,
-    get_episode_servers, BASE_URL
+    get_episode_servers, get_episode_downloads, BASE_URL
 )
 
 import streamlit as st
@@ -182,7 +182,9 @@ elif st.session_state.page == 'episode':
     else:
         st.subheader("🎥 مشاهدة الحلقة")
         with st.spinner("جاري تحميل السيرفرات..."):
-            servers = get_episode_servers(url)
+            servers, pub_date = get_episode_servers(url)
+        if pub_date:
+            st.caption(f"📅 {pub_date}")
         if servers:
             tabs = st.tabs([s['name'][:20] for s in servers])
             for i, (tab, srv) in enumerate(zip(tabs, servers)):
@@ -200,6 +202,24 @@ elif st.session_state.page == 'episode':
         else:
             st.warning("لا توجد سيرفرات متاحة")
             st.markdown(f"[🔗 الرابط الأصلي]({url})")
+
+        st.divider()
+        st.markdown("### 📥 روابط التحميل")
+        with st.spinner("جاري تحميل روابط التحميل..."):
+            dls = get_episode_downloads(url)
+        if dls:
+            for dl in dls:
+                col_a, col_b, col_c = st.columns([4, 2, 4])
+                with col_a:
+                    st.markdown(f"**{dl['server']}**")
+                with col_b:
+                    st.markdown(f"`{dl['quality']}`")
+                with col_c:
+                    st.markdown(f"[⬇ تحميل]({dl['url']})")
+                st.divider()
+        else:
+            st.info("لا توجد روابط تحميل متاحة")
+
         if st.button("🔙 رجوع", use_container_width=True):
             st.session_state.page = 'detail'
             st.rerun()

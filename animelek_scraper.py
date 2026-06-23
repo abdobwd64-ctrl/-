@@ -202,12 +202,47 @@ def parse_pinned_cards(html):
     logger.info(f"Parsed {len(results)} pinned cards")
     return results
 
+def extract_domain(url):
+    domain = urllib.parse.urlparse(url).netloc.replace('www.', '').split('.')[0]
+    return domain
+
+def get_episode_downloads(episode_url):
+    logger.info(f"Fetching downloads: {episode_url}")
+    url = clean_url(episode_url)
+    resp = safe_request(url)
+    if resp is None:
+        return []
+    soup = BeautifulSoup(resp.text, 'html.parser')
+    downloads = []
+    dl_div = soup.find('div', class_='download-list')
+    if dl_div:
+        rows = dl_div.find_all('tr')
+        for tr in rows:
+            tds = tr.find_all('td')
+            if len(tds) >= 4:
+                link = tr.find('a', href=True)
+                if link:
+                    href = link['href']
+                    quality_tag = tds[2].find('strong') or tds[2].find('span')
+                    quality = quality_tag.get_text(strip=True) if quality_tag else ''
+                    lang_tag = tds[3].find('span')
+                    lang = lang_tag.get_text(strip=True) if lang_tag else ''
+                    server = extract_domain(href)
+                    downloads.append({
+                        'url': href,
+                        'server': server,
+                        'quality': quality,
+                        'language': lang,
+                    })
+    logger.info(f"Found {len(downloads)} download links")
+    return downloads
+
 def get_episode_servers(episode_url):
     logger.info(f"Fetching servers: {episode_url}")
     url = clean_url(episode_url)
     resp = safe_request(url)
     if resp is None:
-        return []
+        return [], ''
     soup = BeautifulSoup(resp.text, 'html.parser')
     servers = []
 
@@ -236,8 +271,17 @@ def get_episode_servers(episode_url):
                 'embed_url': clean_url(embed),
                 'video_url': rand_param,
             })
-    logger.info(f"Found {len(servers)} servers")
-    return servers
+    publish_date = ''
+    pd = soup.find('span', class_='publish-date')
+    if pd:
+        txt = pd.get_text(strip=True)
+        if txt:
+            publish_date = re.sub(r'\s+', ' ', txt.replace('أضيفت في', '').strip())
+            if not publish_date:
+                publish_date = re.sub(r'\s+', ' ', txt)
+
+    logger.info(f"Found {len(servers)} servers, date: {publish_date}")
+    return servers, publish_date
 
 def search_anime(query):
     logger.info(f"Search: {query}")
