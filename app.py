@@ -295,6 +295,11 @@ elif st.session_state.page == 'scraper':
         with col_m3: st.metric("حلقات", engine.total_eps)
         with col_m4: st.metric("سيرفرات", engine.total_servers)
         
+        col_t1, col_t2, col_t3 = st.columns(3)
+        with col_t1: st.caption(f"⏱️ مضى: {engine.time_elapsed}")
+        with col_t2: st.caption(f"📊 الباقي: {engine.eta}")
+        with col_t3: st.caption(f"🚨 أخطاء: {engine._error_count}/{engine._max_errors}")
+        
         bar_len = 25
         filled = int(bar_len * engine.current / engine.total) if engine.total > 0 else 0
         bar = '█' * filled + '░' * (bar_len - filled)
@@ -317,9 +322,14 @@ elif st.session_state.page == 'scraper':
         st.rerun()
     
     elif engine.phase == 'check':
-        st.markdown(f"**🔍 فحص الحلقات الجديدة...**")
-        if engine.total > 0:
+        st.markdown(f"**🔍 الفحص الدوري (كل 30 دقيقة)**")
+        if engine.total > 0 and engine.current <= engine.total:
             st.progress(min(engine.current / engine.total, 1.0))
+        elif engine.current > engine.total:
+            st.progress(1.0)
+        col_t1, col_t2 = st.columns(2)
+        with col_t1: st.caption(f"⏱️ مضى: {engine.time_elapsed}")
+        with col_t2: st.caption(f"🚨 أخطاء: {engine._error_count}/{engine._max_errors}")
         st.info(engine.message)
         time.sleep(1.5)
         st.rerun()

@@ -47,6 +47,9 @@ class ScraperEngine:
         self._stop = False
         self._thread = None
         self._dirty = set()
+        self._error_count = 0
+        self._max_errors = 5
+        self.start_time = None
 
     @property
     def overall_pct(self):
@@ -60,6 +63,29 @@ class ScraperEngine:
         if self.phase in ('done', 'pushed'):
             return 100
         return 0
+
+    @property
+    def time_elapsed(self):
+        if not self.start_time:
+            return '—'
+        s = int(time.time() - self.start_time)
+        h, m = divmod(s, 3600)
+        m, s = divmod(m, 60)
+        if h:
+            return f'{h}:{m:02d}:{s:02d}'
+        return f'{m:02d}:{s:02d}'
+
+    @property
+    def eta(self):
+        if self.phase != 'scrape' or self.current == 0 or self.total <= self.current:
+            return '—'
+        avg = (time.time() - self.start_time) / self.current
+        remaining = int(avg * (self.total - self.current))
+        h, m = divmod(remaining, 3600)
+        m, s = divmod(m, 60)
+        if h:
+            return f'{h}:{m:02d}:{s:02d}'
+        return f'{m:02d}:{s:02d}'
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -79,6 +105,7 @@ class ScraperEngine:
         self._stop = True
 
     def _run(self):
+        self.start_time = time.time()
         os.makedirs(DATA, exist_ok=True)
         os.makedirs(os.path.join(DATA, 'anime'), exist_ok=True)
         os.makedirs(os.path.join(DATA, 'posters'), exist_ok=True)
@@ -142,13 +169,20 @@ class ScraperEngine:
                 with self._lock:
                     if ad is None:
                         self.failed += 1
+                        self._error_count += 1
                         self.message = f'❌ {anime["name"][:30]} فشل'
+                        if self._error_count >= self._max_errors:
+                            self._stop = True
+                            self.message = f'❌ توقف: {self._max_errors} أخطاء متتالية'
                     elif ad == 'skipped':
+                        self._error_count = 0
                         self.message = f'⏭ {anime["name"][:30]} مكتمل'
                     elif ad == 'poster_only':
+                        self._error_count = 0
                         self.message = f'🖼 {anime["name"][:30]} بوستر'
                         self._push_incremental(f'🖼 بوستر — {anime["name"][:30]}')
                     else:
+                        self._error_count = 0
                         self._all_data.append(ad)
                         self.done += 1
                         self.message = f'✅ {self.done}/{self.total}'
@@ -156,7 +190,11 @@ class ScraperEngine:
             except Exception as e:
                 with self._lock:
                     self.failed += 1
+                    self._error_count += 1
                     self.message = f'فشل: {anime["name"][:30]} - {str(e)[:60]}'
+                    if self._error_count >= self._max_errors:
+                        self._stop = True
+                        self.message = f'❌ توقف: {self._max_errors} أخطاء متتالية'
                 return None
         with ThreadPoolExecutor(max_workers=self.parallel) as executor:
             list(executor.map(_scrape_wrapper, self._animes))
@@ -305,10 +343,15 @@ class ScraperEngine:
                 raise Exception(f'commit: {cr.status_code} {cr.text[:100]}')
             requests.patch(f'{api}/repos/{repo}/git/refs/heads/{branch}',
                 headers=headers, json={'sha': cr.json()['sha'], 'force': False})
+            self._error_count = 0
         except Exception as e:
             err = f'خطأ في الرفع: {e}'
             self.message = err
             print(err, file=sys.stderr)
+            self._error_count += 1
+            if self._error_count >= 3:
+                self._stop = True
+                self.message = f'❌ توقف: فشل الرفع {self._error_count} مرات'
 
     def _download_poster(self, aid, poster_url):
         if not poster_url or not poster_url.startswith('http'):
@@ -478,12 +521,53 @@ class ScraperEngine:
             if '/episode/' in ep_url:
                 ep_num = ep_url.rstrip('/').rsplit('-', 1)[-1]
             if not old_data:
-                ad = self._scrape_one(anime_url)
+                ad = self._scrape_one({'url': anime_url, 'name': ep.get('anime_name', aid)})
                 if ad and isinstance(ad, dict):
                     new_anime += 1
                     self._all_data.append(ad)
                     self.done += 1
-                continue
+                    continue
+                ep_num = ''
+                if '/episode/' in ep_url:
+                    ep_num = ep_url.rstrip('/').rsplit('-', 1)[-1]
+                try:
+                    srv, pub_date = get_episode_servers(ep_url)
+                    dls = get_episode_downloads(ep_url)
+                    if not srv and not dls:
+                        continue
+                    poster_local = self._download_poster(aid, ep.get('image', ''))
+                    poster_fp_check = os.path.join(DATA, 'posters', f'{aid}.webp')
+                    if os.path.exists(poster_fp_check):
+                        self._mark_dirty(poster_fp_check)
+                    new_ad = {
+                        'id': aid,
+                        'title': ep.get('anime_name', ep.get('episode_name', aid)),
+                        'url': anime_url,
+                        'poster': poster_local,
+                        'status': '', 'type': '', 'episodes_count': '1',
+                        'start_date': '', 'season': '', 'genres': [], 'story': '',
+                        'episodes': [{
+                            'number': ep_num,
+                            'title': ep.get('episode_name', ''),
+                            'date': pub_date,
+                            'servers': [{'name': s['name'], 'embed_url': s['embed_url']} for s in srv],
+                            'downloads': [{'server': d['server'], 'quality': d['quality'],
+                                            'language': d['language'], 'url': d['url']} for d in dls],
+                        }],
+                        'last_updated': datetime.utcnow().isoformat(),
+                    }
+                    with open(fp, 'w', encoding='utf-8') as f:
+                        json.dump(new_ad, f, ensure_ascii=False, indent=2)
+                    self._mark_dirty(fp)
+                    new_anime += 1
+                    self.message = f'🆕 أنمي جديد: {new_ad["title"]}'
+                except Exception as ex:
+                    self._error_count += 1
+                    if self._error_count >= self._max_errors:
+                        self.message = f'❌ توقف: {self._max_errors} أخطاء متتالية'
+                        self._stop = True
+                        return
+                    continue
             if ep_num and ep_num not in existing_eps:
                 try:
                     srv, pub_date = get_episode_servers(ep_url)
@@ -504,7 +588,12 @@ class ScraperEngine:
                     self._mark_dirty(fp)
                     new_eps += 1
                     self.message = f'🆕 حلقة جديدة: {old_data.get("title",aid)} - الحلقة {ep_num}'
-                except:
+                except Exception:
+                    self._error_count += 1
+                    if self._error_count >= self._max_errors:
+                        self.message = f'❌ توقف: {self._max_errors} أخطاء متتالية'
+                        self._stop = True
+                        return
                     continue
             elif ep_num and ep_num in existing_eps:
                 old_servers = existing_eps[ep_num].get('servers', [])
@@ -523,40 +612,61 @@ class ScraperEngine:
                         self._mark_dirty(fp)
                         new_servers += 1
                         self.message = f'🆕 سيرفر جديد: {old_data.get("title",aid)} - الحلقة {ep_num}'
-                except:
+                except Exception:
+                    self._error_count += 1
+                    if self._error_count >= self._max_errors:
+                        self.message = f'❌ توقف: {self._max_errors} أخطاء متتالية'
+                        self._stop = True
+                        return
                     pass
             time.sleep(DELAY)
         self._push_incremental(f'🔄 فحص: {new_anime} أنمي + {new_eps} حلقة + {new_servers} سيرفر')
 
     def _run_check(self):
-        """Periodically check latest episodes in batches of 5."""
+        """Periodically check latest episodes every 30 minutes."""
         from animelek_scraper import get_latest_episodes_page
+        self.start_time = time.time()
         os.makedirs(DATA, exist_ok=True)
         os.makedirs(os.path.join(DATA, 'anime'), exist_ok=True)
         os.makedirs(os.path.join(DATA, 'posters'), exist_ok=True)
         self.phase = 'check'
-        self.message = 'جاري فحص الحلقات الجديدة...'
-        try:
-            all_eps = get_latest_episodes_page()
-            if not all_eps:
-                self.message = 'لا توجد حلقات جديدة'
+        self._error_count = 0
+        while not self._stop:
+            try:
+                self.message = '🔍 جاري فحص الحلقات الجديدة...'
+                all_eps = get_latest_episodes_page()
+                if all_eps:
+                    self._error_count = 0
+                    total = len(all_eps)
+                    self.total = total
+                    self.current = 0
+                    for start in range(0, total, 5):
+                        if self._stop:
+                            return
+                        batch = all_eps[start:start+5]
+                        self.current = start + len(batch)
+                        self.message = f'فحص {start+1}-{min(start+5,total)} من {total}...'
+                        self._check_new(batch)
+                    self.message = f'✅ تم فحص {total} حلقة'
+                else:
+                    self._error_count += 1
+                    self.message = f'⚠️ لا توجد حلقات جديدة ({self._error_count})'
+            except Exception as e:
+                self._error_count += 1
+                self.message = f'خطأ في الفحص ({self._error_count}): {e}'
+            if self._error_count >= self._max_errors:
+                self.message = f'❌ توقف تلقائي بعد {self._error_count} أخطاء متتالية'
                 self.phase = 'idle'
                 return
-            total = len(all_eps)
-            self.total = total
-            self.current = 0
-            for start in range(0, total, 5):
+            if self._stop:
+                break
+            self.message = '⏳ انتظار 30 دقيقة للفحص التالي...'
+            for _ in range(1800):
                 if self._stop:
-                    return
-                batch = all_eps[start:start+5]
-                self.current = start + len(batch)
-                self.message = f'فحص {start+1}-{min(start+5,total)} من {total}...'
-                self._check_new(batch)
-            self.message = f'✅ تم فحص {total} حلقة'
-            self.phase = 'idle'
-        except Exception as e:
-            self.message = f'خطأ في الفحص: {e}'
-            self.phase = 'idle'
+                    break
+                time.sleep(1)
+        self.phase = 'idle'
+        self.message = 'تم إيقاف الفحص الدوري'
 
     def _save_indexes(self):
         self.phase = 'save'
