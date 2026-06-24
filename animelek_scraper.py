@@ -306,6 +306,33 @@ def get_homepage_pinned():
 
 LATEST_LIST_URL = BASE_URL + '/%D9%82%D8%A7%D8%A6%D9%85%D8%A9-%D8%A7%D9%84%D8%AD%D9%84%D9%82%D8%A7%D8%AA/'
 
+ANIME_LIST_URL = BASE_URL + '/%D9%82%D8%A7%D8%A6%D9%85%D8%A9-%D8%A7%D9%84%D8%A3%D9%86%D9%85%D9%8A/'
+
+def get_anime_list_page(page=1):
+    logger.info(f"Fetching anime list page {page}")
+    url = f"{ANIME_LIST_URL}?page={page}" if page > 1 else ANIME_LIST_URL
+    resp = safe_request(url)
+    if resp is None:
+        return []
+    return parse_search_results(resp.text)
+
+def get_anime_list_page_count():
+    logger.info("Fetching anime list page count")
+    resp = safe_request(ANIME_LIST_URL)
+    if resp is None:
+        return 1
+    soup = BeautifulSoup(resp.text, 'html.parser')
+    pag = soup.select('nav.pagination-page a.btn.square')
+    max_page = 1
+    for a in pag:
+        try:
+            n = int(a.get_text(strip=True))
+            if n > max_page:
+                max_page = n
+        except:
+            pass
+    return max_page
+
 def get_latest_episodes_page():
     logger.info("Fetching latest episodes page")
     resp = safe_request(LATEST_LIST_URL)

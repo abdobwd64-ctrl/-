@@ -134,25 +134,36 @@ class ScraperEngine:
         self.message = 'جاري اكتشاف الأنمي...'
         known = {}
 
+        anime_dir = os.path.join(DATA, 'anime')
+        if os.path.isdir(anime_dir):
+            for fn in os.listdir(anime_dir):
+                if not fn.endswith('.json'):
+                    continue
+                ad = self._read_json_safe(os.path.join(anime_dir, fn))
+                if ad:
+                    known[ad.get('url', '')] = ad.get('title', fn[:-5])
+            self.message = f'تم تحميل {len(known)} أنمي من الملفات المحلية'
+
         eps = get_homepage_pinned()
         for ep in eps:
             if ep['anime_url']:
                 known[ep['anime_url']] = ep['anime_name']
 
-        terms = ['a','b','c','d','e','f','g','h','i','j','k','l','m',
-                 'n','o','p','q','r','s','t','u','v','w','x','y','z',
-                 'one','two','king','love','world','death','naruto','dragon',
-                 'gate','time','star','black','blue','red','white']
-        for t in terms:
-            if self._stop: return
-            try:
-                res = search_anime(t)
+        from animelek_scraper import get_anime_list_page, get_anime_list_page_count
+        try:
+            total_pages = get_anime_list_page_count()
+            self.message = f'جاري سحب قائمة الأنمي من {total_pages} صفحة...'
+            for p in range(1, total_pages + 1):
+                if self._stop: return
+                res = get_anime_list_page(p)
                 for r in res:
                     if r['url'] and r['url'] not in known:
-                        known[r['url']] = r['name']
-                time.sleep(0.5)
-            except:
-                pass
+                        known[r['url']] = r.get('name', r['url'].rstrip('/').split('/')[-1])
+                if p % 10 == 0:
+                    self.message = f'صفحة {p}/{total_pages} — {len(known)} أنمي'
+                time.sleep(0.3)
+        except Exception as ex:
+            print(f'[اكتشاف-خطأ] فشل سحب القائمة: {ex}', file=sys.stderr)
 
         self._animes = [{'url': u, 'name': n} for u, n in known.items()]
         random.shuffle(self._animes)
