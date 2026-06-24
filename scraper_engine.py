@@ -127,6 +127,7 @@ class ScraperEngine:
         except Exception as e:
             self.phase = 'error'
             self.message = str(e)
+            print(f'[خطأ] {e}', file=sys.stderr)
 
     def _discover(self):
         self.phase = 'discover'
@@ -176,6 +177,7 @@ class ScraperEngine:
                         self.failed += 1
                         self._error_count += 1
                         self.message = f'❌ {anime["name"][:30]} فشل'
+                        print(f'[فشل] {anime["name"][:30]}', file=sys.stderr)
                     elif ad == 'skipped':
                         self._error_count = 0
                         self.message = f'⏭ {anime["name"][:30]} مكتمل'
@@ -194,6 +196,7 @@ class ScraperEngine:
                     self.failed += 1
                     self._error_count += 1
                     self.message = f'فشل: {anime["name"][:30]} - {str(e)[:60]}'
+                    print(f'[فشل] {anime["name"][:30]}: {e}', file=sys.stderr)
                 return None
         with ThreadPoolExecutor(max_workers=self.parallel) as executor:
             list(executor.map(_scrape_wrapper, self._animes))
@@ -330,8 +333,8 @@ class ScraperEngine:
                     try:
                         with open(local_fp, 'w', encoding='utf-8') as f:
                             f.write(ar.text)
-                    except:
-                        pass
+                    except Exception as ex_d:
+                        print(f'[مزامنة-خطأ] {rid}: {ex_d}', file=sys.stderr)
         # 3. Sync remaining index files
         for name in ('latest.json', 'popular.json', 'meta.json'):
             r = requests.get(f'{raw_base}/data/{name}', headers=headers)
@@ -650,6 +653,7 @@ class ScraperEngine:
                     self.message = f'🆕 أنمي جديد: {new_ad["title"]}'
                 except Exception as ex:
                     self._error_count += 1
+                    print(f'[فحص-خطأ] أنمي جديد: {ep.get("anime_name", aid)}: {ex}', file=sys.stderr)
                     continue
             if ep_num and ep_num not in existing_eps:
                 try:
@@ -672,8 +676,9 @@ class ScraperEngine:
                     new_eps += 1
                     self.check_new_eps += 1
                     self.message = f'🆕 حلقة جديدة: {old_data.get("title",aid)} - الحلقة {ep_num}'
-                except Exception:
+                except Exception as ex2:
                     self._error_count += 1
+                    print(f'[فحص-خطأ] حلقة جديدة: {old_data.get("title",aid)} حلقة {ep_num}: {ex2}', file=sys.stderr)
                     continue
             elif ep_num and ep_num in existing_eps:
                 old_servers = existing_eps[ep_num].get('servers', [])
@@ -695,8 +700,9 @@ class ScraperEngine:
                         self.message = f'🆕 سيرفر جديد: {old_data.get("title",aid)} - الحلقة {ep_num}'
                     else:
                         self.check_skipped += 1
-                except Exception:
+                except Exception as ex3:
                     self._error_count += 1
+                    print(f'[فحص-خطأ] سيرفر: {old_data.get("title",aid)} حلقة {ep_num}: {ex3}', file=sys.stderr)
                     pass
             time.sleep(DELAY)
         self._push_incremental(f'🔄 فحص: {new_anime} أنمي + {new_eps} حلقة + {new_servers} سيرفر')
@@ -738,9 +744,11 @@ class ScraperEngine:
                 else:
                     self._error_count += 1
                     self.message = f'⚠️ لا توجد حلقات جديدة ({self._error_count})'
+                    print(f'[فحص-تحذير] لا توجد حلقات جديدة ({self._error_count})', file=sys.stderr)
             except Exception as e:
                 self._error_count += 1
                 self.message = f'خطأ في الفحص ({self._error_count}): {e}'
+                print(f'[فحص-خطأ] {e}', file=sys.stderr)
             if self._stop:
                 break
             self.message = '⏳ انتظار 30 دقيقة للفحص التالي...'
