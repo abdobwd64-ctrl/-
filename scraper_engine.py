@@ -50,6 +50,10 @@ class ScraperEngine:
         self._dirty_lock = threading.Lock()
         self._error_count = 0
         self.start_time = None
+        self.check_new_anime = 0
+        self.check_new_eps = 0
+        self.check_new_servers = 0
+        self.check_skipped = 0
 
     @property
     def overall_pct(self):
@@ -605,6 +609,7 @@ class ScraperEngine:
                 ad = self._scrape_one({'url': anime_url, 'name': ep.get('anime_name', aid)})
                 if ad and isinstance(ad, dict):
                     new_anime += 1
+                    self.check_new_anime += 1
                     self._all_data.append(ad)
                     self.done += 1
                     continue
@@ -641,6 +646,7 @@ class ScraperEngine:
                         json.dump(new_ad, f, ensure_ascii=False, indent=2)
                     self._mark_dirty(fp)
                     new_anime += 1
+                    self.check_new_anime += 1
                     self.message = f'🆕 أنمي جديد: {new_ad["title"]}'
                 except Exception as ex:
                     self._error_count += 1
@@ -664,6 +670,7 @@ class ScraperEngine:
                         json.dump(old_data, f, ensure_ascii=False, indent=2)
                     self._mark_dirty(fp)
                     new_eps += 1
+                    self.check_new_eps += 1
                     self.message = f'🆕 حلقة جديدة: {old_data.get("title",aid)} - الحلقة {ep_num}'
                 except Exception:
                     self._error_count += 1
@@ -684,7 +691,10 @@ class ScraperEngine:
                             json.dump(old_data, f, ensure_ascii=False, indent=2)
                         self._mark_dirty(fp)
                         new_servers += 1
+                        self.check_new_servers += 1
                         self.message = f'🆕 سيرفر جديد: {old_data.get("title",aid)} - الحلقة {ep_num}'
+                    else:
+                        self.check_skipped += 1
                 except Exception:
                     self._error_count += 1
                     pass
@@ -700,12 +710,20 @@ class ScraperEngine:
         os.makedirs(os.path.join(DATA, 'posters'), exist_ok=True)
         self.phase = 'check'
         self._error_count = 0
+        self.check_new_anime = 0
+        self.check_new_eps = 0
+        self.check_new_servers = 0
+        self.check_skipped = 0
         while not self._stop:
             try:
                 self.message = '🔍 جاري فحص الحلقات الجديدة...'
                 all_eps = get_latest_episodes_page()
                 if all_eps:
                     self._error_count = 0
+                    self.check_new_anime = 0
+                    self.check_new_eps = 0
+                    self.check_new_servers = 0
+                    self.check_skipped = 0
                     total = len(all_eps)
                     self.total = total
                     self.current = 0
@@ -714,9 +732,9 @@ class ScraperEngine:
                             return
                         batch = all_eps[start:start+5]
                         self.current = start + len(batch)
-                        self.message = f'فحص {start+1}-{min(start+5,total)} من {total}...'
+                        self.message = f'🔎 فحص {start+1}-{min(start+5,total)} من {total} | 🆕ج:{self.check_new_anime} 🆕ح:{self.check_new_eps} 🆕س:{self.check_new_servers} ✅ك:{self.check_skipped}'
                         self._check_new(batch)
-                    self.message = f'✅ تم فحص {total} حلقة'
+                    self.message = f'✅ تم فحص {total} حلقة | 🆕 أنمي: {self.check_new_anime} | 🆕 حلقات: {self.check_new_eps} | 🆕 سيرفرات: {self.check_new_servers} | ✅ موجود: {self.check_skipped}'
                 else:
                     self._error_count += 1
                     self.message = f'⚠️ لا توجد حلقات جديدة ({self._error_count})'

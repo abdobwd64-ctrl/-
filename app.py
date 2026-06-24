@@ -335,6 +335,11 @@ elif st.session_state.page == 'scraper':
             st.progress(min(engine.current / engine.total, 1.0))
         elif engine.current > engine.total:
             st.progress(1.0)
+        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+        with col_m1: st.metric("🆕 أنمي جديد", engine.check_new_anime)
+        with col_m2: st.metric("🆕 حلقات جديدة", engine.check_new_eps)
+        with col_m3: st.metric("🆕 سيرفرات جديدة", engine.check_new_servers)
+        with col_m4: st.metric("✅ موجود مسبقًا", engine.check_skipped)
         col_t1, col_t2 = st.columns(2)
         with col_t1: st.caption(f"⏱️ مضى: {engine.time_elapsed}")
         with col_t2: st.caption(f"🚨 أخطاء: {engine._error_count}")
