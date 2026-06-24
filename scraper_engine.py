@@ -47,8 +47,8 @@ class ScraperEngine:
         self._stop = False
         self._thread = None
         self._dirty = set()
+        self._dirty_lock = threading.Lock()
         self._error_count = 0
-        self._max_errors = 5
         self.start_time = None
 
     @property
@@ -171,9 +171,6 @@ class ScraperEngine:
                         self.failed += 1
                         self._error_count += 1
                         self.message = f'❌ {anime["name"][:30]} فشل'
-                        if self._error_count >= self._max_errors:
-                            self._stop = True
-                            self.message = f'❌ توقف: {self._max_errors} أخطاء متتالية'
                     elif ad == 'skipped':
                         self._error_count = 0
                         self.message = f'⏭ {anime["name"][:30]} مكتمل'
@@ -192,9 +189,6 @@ class ScraperEngine:
                     self.failed += 1
                     self._error_count += 1
                     self.message = f'فشل: {anime["name"][:30]} - {str(e)[:60]}'
-                    if self._error_count >= self._max_errors:
-                        self._stop = True
-                        self.message = f'❌ توقف: {self._max_errors} أخطاء متتالية'
                 return None
         with ThreadPoolExecutor(max_workers=self.parallel) as executor:
             list(executor.map(_scrape_wrapper, self._animes))
@@ -283,15 +277,16 @@ class ScraperEngine:
 
     def _mark_dirty(self, file_path):
         rp = os.path.relpath(file_path, DIR).replace('\\', '/')
-        self._dirty.add(rp)
+        with self._dirty_lock:
+            self._dirty.add(rp)
 
     def _push_incremental(self, msg):
         if not self.gh_token:
             return
         self._update_indexes()
-        # mark index files as dirty
-        for idx_name in ('latest.json', 'all-animes.json', 'popular.json', 'meta.json'):
-            self._dirty.add(f'data/{idx_name}')
+        with self._dirty_lock:
+            for idx_name in ('latest.json', 'all-animes.json', 'popular.json', 'meta.json'):
+                self._dirty.add(f'data/{idx_name}')
         self.message = f'🔄 رفع إلى GitHub...'
         headers = {'Authorization': f'token {self.gh_token}', 'Accept': 'application/vnd.github.v3+json'}
         api = 'https://api.github.com'
@@ -304,8 +299,11 @@ class ScraperEngine:
             base = requests.get(f'{api}/repos/{repo}/git/commits/{latest}', headers=headers).json()['tree']['sha']
 
             import base64
+            with self._dirty_lock:
+                dirty_snapshot = sorted(self._dirty)
+                self._dirty.clear()
             files = []
-            for rel in sorted(self._dirty):
+            for rel in dirty_snapshot:
                 full = os.path.join(DIR, rel)
                 if not os.path.exists(full):
                     continue
@@ -323,7 +321,6 @@ class ScraperEngine:
                     except UnicodeDecodeError:
                         text = raw.decode('cp1256', errors='replace')
                     files.append({'path': rel_clean, 'content': text, 'encoding': 'utf-8'})
-            self._dirty.clear()
 
             if not files:
                 self.message = '⚠️ لا توجد ملفات جديدة للرفع'
@@ -359,9 +356,6 @@ class ScraperEngine:
             self.message = err
             print(err, file=sys.stderr)
             self._error_count += 1
-            if self._error_count >= 3:
-                self._stop = True
-                self.message = f'❌ توقف: فشل الرفع {self._error_count} مرات'
 
     def _download_poster(self, aid, poster_url):
         if not poster_url or not poster_url.startswith('http'):
@@ -573,10 +567,6 @@ class ScraperEngine:
                     self.message = f'🆕 أنمي جديد: {new_ad["title"]}'
                 except Exception as ex:
                     self._error_count += 1
-                    if self._error_count >= self._max_errors:
-                        self.message = f'❌ توقف: {self._max_errors} أخطاء متتالية'
-                        self._stop = True
-                        return
                     continue
             if ep_num and ep_num not in existing_eps:
                 try:
@@ -600,10 +590,6 @@ class ScraperEngine:
                     self.message = f'🆕 حلقة جديدة: {old_data.get("title",aid)} - الحلقة {ep_num}'
                 except Exception:
                     self._error_count += 1
-                    if self._error_count >= self._max_errors:
-                        self.message = f'❌ توقف: {self._max_errors} أخطاء متتالية'
-                        self._stop = True
-                        return
                     continue
             elif ep_num and ep_num in existing_eps:
                 old_servers = existing_eps[ep_num].get('servers', [])
@@ -624,10 +610,6 @@ class ScraperEngine:
                         self.message = f'🆕 سيرفر جديد: {old_data.get("title",aid)} - الحلقة {ep_num}'
                 except Exception:
                     self._error_count += 1
-                    if self._error_count >= self._max_errors:
-                        self.message = f'❌ توقف: {self._max_errors} أخطاء متتالية'
-                        self._stop = True
-                        return
                     pass
             time.sleep(DELAY)
         self._push_incremental(f'🔄 فحص: {new_anime} أنمي + {new_eps} حلقة + {new_servers} سيرفر')
@@ -664,10 +646,6 @@ class ScraperEngine:
             except Exception as e:
                 self._error_count += 1
                 self.message = f'خطأ في الفحص ({self._error_count}): {e}'
-            if self._error_count >= self._max_errors:
-                self.message = f'❌ توقف تلقائي بعد {self._error_count} أخطاء متتالية'
-                self.phase = 'idle'
-                return
             if self._stop:
                 break
             self.message = '⏳ انتظار 30 دقيقة للفحص التالي...'

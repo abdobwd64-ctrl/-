@@ -241,8 +241,10 @@ def push_to_github():
     for i, f in enumerate(files_to_push):
         blob_r = requests.post(f'{api}/repos/{REPO}/git/blobs',
             headers=headers, json={'content': f['content'], 'encoding': f['encoding']})
-        if blob_r.status_code == 201:
-            blobs.append({'path': f['path'], 'sha': blob_r.json()['sha'], 'mode': '100644', 'type': 'blob'})
+        if blob_r.status_code != 201:
+            log(f"  ✗ فشل رفع blob {f['path']}: {blob_r.status_code} {blob_r.text[:100]}")
+            return
+        blobs.append({'path': f['path'], 'sha': blob_r.json()['sha'], 'mode': '100644', 'type': 'blob'})
         pct = (i+1)/len(files_to_push)*100
         bar = '█' * int(20*(i+1)/len(files_to_push)) + '░' * (20 - int(20*(i+1)/len(files_to_push)))
         print(f'\r     └─ أرفع ملفات [{bar}] {i+1}/{len(files_to_push)} ({pct:.0f}%)', end='', flush=True)

@@ -298,7 +298,7 @@ elif st.session_state.page == 'scraper':
         col_t1, col_t2, col_t3 = st.columns(3)
         with col_t1: st.caption(f"⏱️ مضى: {engine.time_elapsed}")
         with col_t2: st.caption(f"📊 الباقي: {engine.eta}")
-        with col_t3: st.caption(f"🚨 أخطاء: {engine._error_count}/{engine._max_errors}")
+        with col_t3: st.caption(f"🚨 أخطاء: {engine._error_count}")
         
         bar_len = 25
         filled = int(bar_len * engine.current / engine.total) if engine.total > 0 else 0
@@ -329,7 +329,7 @@ elif st.session_state.page == 'scraper':
             st.progress(1.0)
         col_t1, col_t2 = st.columns(2)
         with col_t1: st.caption(f"⏱️ مضى: {engine.time_elapsed}")
-        with col_t2: st.caption(f"🚨 أخطاء: {engine._error_count}/{engine._max_errors}")
+        with col_t2: st.caption(f"🚨 أخطاء: {engine._error_count}")
         st.info(engine.message)
         time.sleep(1.5)
         st.rerun()
