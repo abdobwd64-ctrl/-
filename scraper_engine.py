@@ -341,7 +341,8 @@ class ScraperEngine:
             tr = requests.post(f'{api}/repos/{repo}/git/trees',
                 headers=headers, json={'base_tree': base, 'tree': blobs})
             if tr.status_code != 201:
-                raise Exception(f'tree: {tr.status_code} {tr.text[:100]}')
+                paths = [b['path'] for b in blobs]
+                raise Exception(f'tree: {tr.status_code} {tr.text[:300]} | paths: {paths[:10]}')
             now = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
             cr = requests.post(f'{api}/repos/{repo}/git/commits',
                 headers=headers, json={
@@ -766,14 +767,16 @@ class ScraperEngine:
         for f in files_to_push:
             blob_r = requests.post(f'{api}/repos/{repo}/git/blobs',
                 headers=headers, json={'content': f['content'], 'encoding': f['encoding']})
-            if blob_r.status_code == 201:
-                blobs.append({'path': f['path'], 'sha': blob_r.json()['sha'],
-                              'mode': '100644', 'type': 'blob'})
+            if blob_r.status_code != 201:
+                raise Exception(f'blob {f["path"]}: {blob_r.status_code} {blob_r.text[:100]}')
+            blobs.append({'path': f['path'], 'sha': blob_r.json()['sha'],
+                          'mode': '100644', 'type': 'blob'})
 
         tree_r = requests.post(f'{api}/repos/{repo}/git/trees',
             headers=headers, json={'base_tree': base_tree, 'tree': blobs})
         if tree_r.status_code != 201:
-            self.message = f'فشل إنشاء tree: {tree_r.status_code}'
+            paths = [b['path'] for b in blobs[:10]]
+            self.message = f'فشل إنشاء tree: {tree_r.status_code} {tree_r.text[:200]} | paths: {paths}'
             self.phase = 'done'
             return
 

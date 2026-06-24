@@ -220,20 +220,29 @@ def push_to_github():
     base_tree = requests.get(commit_url, headers=headers).json()['tree']['sha']
 
     # 3. Blobs
-    files_to_push = {}
+    import base64
+    files_to_push = []
     for root, dirs, files in os.walk(DATA):
         for fn in files:
             full = os.path.join(root, fn)
-            rel = os.path.relpath(full, DIR).replace('\\', '/')
+            rel = os.path.relpath(full, DIR).replace('\\', '/').lstrip('/')
             with open(full, 'rb') as f:
-                files_to_push[rel] = f.read().decode('utf-8')
+                raw = f.read()
+            if rel.endswith('.webp'):
+                files_to_push.append({'path': rel, 'content': base64.b64encode(raw).decode('ascii'), 'encoding': 'base64'})
+            else:
+                try:
+                    text = raw.decode('utf-8')
+                except UnicodeDecodeError:
+                    text = raw.decode('cp1256', errors='replace')
+                files_to_push.append({'path': rel, 'content': text, 'encoding': 'utf-8'})
 
     blobs = []
-    for i, (path, content) in enumerate(files_to_push.items()):
+    for i, f in enumerate(files_to_push):
         blob_r = requests.post(f'{api}/repos/{REPO}/git/blobs',
-            headers=headers, json={'content': content, 'encoding': 'utf-8'})
+            headers=headers, json={'content': f['content'], 'encoding': f['encoding']})
         if blob_r.status_code == 201:
-            blobs.append({'path': path, 'sha': blob_r.json()['sha'], 'mode': '100644', 'type': 'blob'})
+            blobs.append({'path': f['path'], 'sha': blob_r.json()['sha'], 'mode': '100644', 'type': 'blob'})
         pct = (i+1)/len(files_to_push)*100
         bar = '█' * int(20*(i+1)/len(files_to_push)) + '░' * (20 - int(20*(i+1)/len(files_to_push)))
         print(f'\r     └─ أرفع ملفات [{bar}] {i+1}/{len(files_to_push)} ({pct:.0f}%)', end='', flush=True)
