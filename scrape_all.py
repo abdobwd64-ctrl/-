@@ -159,7 +159,15 @@ def save_indexes(all_data):
         index_list.append(info)
 
         if ad.get('episodes'):
-            latest_eps = sorted(ad['episodes'], key=lambda x: str(x.get('number', '0')), reverse=True)[:3]
+            def _parse_date(d):
+                if not d: return ''
+                import re
+                months = {'يناير':'01','فبراير':'02','مارس':'03','أبريل':'04','إبريل':'04','مايو':'05','يونيو':'06','يوليو':'07','أغسطس':'08','غشت':'08','سبتمبر':'09','أكتوبر':'10','نوفمبر':'11','ديسمبر':'12'}
+                m = re.match(r'(\d+)\s+([^,\s]+),?\s*(\d+)', d)
+                if m: return f'{m.group(3)}-{months.get(m.group(2),"01")}-{int(m.group(1)):02d}'
+                return ''
+            valid_eps = [ep for ep in ad['episodes'] if str(ep.get('number', '')).isdigit()]
+            latest_eps = sorted(valid_eps, key=lambda x: _parse_date(x.get('date', '')), reverse=True)[:5]
             for ep in latest_eps:
                 latest.append({
                     'anime_id': ad['id'],

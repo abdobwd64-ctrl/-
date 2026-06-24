@@ -111,6 +111,7 @@ class ScraperEngine:
         os.makedirs(os.path.join(DATA, 'posters'), exist_ok=True)
 
         try:
+            self._sync_index_from_github()
             self._discover()
             if self._stop: return
             self._scrape_all()
@@ -238,8 +239,9 @@ class ScraperEngine:
             }
             index_list.append(info)
             if ad.get('episodes'):
-                sorted_eps = sorted(ad['episodes'],
-                    key=lambda x: str(x.get('number', '0')), reverse=True)[:3]
+                valid_eps = [ep for ep in ad['episodes'] if str(ep.get('number', '')).isdigit()]
+                sorted_eps = sorted(valid_eps,
+                    key=lambda x: self._parse_arabic_date(x.get('date', '')), reverse=True)[:5]
                 for ep in sorted_eps:
                     d = ep.get('date', '')
                     latest.append({
@@ -280,9 +282,84 @@ class ScraperEngine:
         with self._dirty_lock:
             self._dirty.add(rp)
 
+    def _sync_index_from_github(self):
+        if not self.gh_token:
+            return
+        headers = {'Authorization': f'token {self.gh_token}', 'Accept': 'application/vnd.github.v3+json'}
+        repo = 'abdobwd64-ctrl/anime'
+        branch = 'main'
+        raw_base = f'https://raw.githubusercontent.com/{repo}/{branch}'
+        os.makedirs(os.path.join(DATA, 'anime'), exist_ok=True)
+        # 1. Download all-animes.json to know what exists remotely
+        r = requests.get(f'{raw_base}/data/all-animes.json', headers=headers)
+        remote_ids = set()
+        if r.status_code == 200:
+            try:
+                remote_list = r.json()
+                remote_ids = {x['id'] for x in remote_list if x.get('id')}
+            except:
+                remote_list = []
+            local_list_path = os.path.join(DATA, 'all-animes.json')
+            if os.path.exists(local_list_path):
+                try:
+                    local_list = json.load(open(local_list_path, encoding='utf-8'))
+                    local_ids = {x['id'] for x in local_list if x.get('id')}
+                except:
+                    local_list, local_ids = [], set()
+            else:
+                local_list, local_ids = [], set()
+            merged = []
+            seen = set()
+            for item in local_list + remote_list:
+                iid = item.get('id')
+                if iid and iid not in seen:
+                    seen.add(iid)
+                    merged.append(item)
+            with open(local_list_path, 'w', encoding='utf-8') as f:
+                json.dump(merged, f, ensure_ascii=False, indent=2)
+        # 2. Download anime JSON files that don't exist locally
+        for rid in remote_ids:
+            local_fp = os.path.join(DATA, 'anime', f'{rid}.json')
+            if not os.path.exists(local_fp):
+                ar = requests.get(f'{raw_base}/data/anime/{rid}.json', headers=headers)
+                if ar.status_code == 200:
+                    try:
+                        with open(local_fp, 'w', encoding='utf-8') as f:
+                            f.write(ar.text)
+                    except:
+                        pass
+        # 3. Sync remaining index files
+        for name in ('latest.json', 'popular.json', 'meta.json'):
+            r = requests.get(f'{raw_base}/data/{name}', headers=headers)
+            if r.status_code == 200:
+                local = os.path.join(DATA, name)
+                try:
+                    existing = json.load(open(local, encoding='utf-8')) if os.path.exists(local) else []
+                except:
+                    existing = []
+                try:
+                    remote = r.json()
+                except:
+                    continue
+                if isinstance(remote, list) and isinstance(existing, list):
+                    existing_ids = {x.get('id') or x.get('anime_id') for x in existing}
+                    merged = list(existing)
+                    for item in remote:
+                        item_id = item.get('id') or item.get('anime_id')
+                        if item_id and item_id not in existing_ids:
+                            merged.append(item)
+                            existing_ids.add(item_id)
+                    with open(local, 'w', encoding='utf-8') as f:
+                        json.dump(merged, f, ensure_ascii=False, indent=2)
+                elif isinstance(remote, dict) and isinstance(existing, dict):
+                    if not existing.get('total_anime', 0) or remote.get('total_anime', 0) > existing.get('total_anime', 0):
+                        with open(local, 'w', encoding='utf-8') as f:
+                            json.dump(remote, f, ensure_ascii=False, indent=2)
+
     def _push_incremental(self, msg):
         if not self.gh_token:
             return
+        self._sync_index_from_github()
         self._update_indexes()
         with self._dirty_lock:
             for idx_name in ('latest.json', 'all-animes.json', 'popular.json', 'meta.json'):
@@ -670,8 +747,16 @@ class ScraperEngine:
             }
             index_list.append(info)
             if ad.get('episodes'):
-                latest_eps = sorted(ad['episodes'],
-                    key=lambda x: str(x.get('number', '0')), reverse=True)[:3]
+                def _parse(d):
+                    if not d: return ''
+                    import re
+                    months = {'يناير':'01','فبراير':'02','مارس':'03','أبريل':'04','إبريل':'04','مايو':'05','يونيو':'06','يوليو':'07','أغسطس':'08','غشت':'08','سبتمبر':'09','أكتوبر':'10','نوفمبر':'11','ديسمبر':'12'}
+                    m = re.match(r'(\d+)\s+([^,\s]+),?\s*(\d+)', d)
+                    if m: return f'{m.group(3)}-{months.get(m.group(2),"01")}-{int(m.group(1)):02d}'
+                    return ''
+                valid_eps = [ep for ep in ad['episodes'] if str(ep.get('number', '')).isdigit()]
+                latest_eps = sorted(valid_eps,
+                    key=lambda x: _parse(x.get('date', '')), reverse=True)[:5]
                 for ep in latest_eps:
                     latest.append({
                         'anime_id': ad['id'], 'anime_title': ad['title'],
@@ -703,12 +788,15 @@ class ScraperEngine:
             self.phase = 'done'
             return
 
+        self._sync_index_from_github()
+        self._update_indexes()
+        
         self.message = 'جاري الرفع إلى GitHub...'
         headers = {'Authorization': f'token {self.gh_token}', 'Accept': 'application/vnd.github.v3+json'}
         api = 'https://api.github.com'
         repo = 'abdobwd64-ctrl/anime'
         branch = 'main'
-
+        
         ref_r = requests.get(f'{api}/repos/{repo}/git/refs/heads/{branch}', headers=headers)
         if ref_r.status_code != 200:
             self.message = f'فشل الوصول للمستودع: {ref_r.status_code}'

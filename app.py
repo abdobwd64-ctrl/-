@@ -254,7 +254,7 @@ elif st.session_state.page == 'scraper':
     if engine.phase in live_phases and not (engine._thread and engine._thread.is_alive()):
         engine.phase = 'idle'
     
-    col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+    col_s1, col_s2, col_s3, col_s4, col_s5 = st.columns(5)
     with col_s1:
         if engine.phase == 'idle' and st.button("🚀 ابدأ السحب", type="primary", width='stretch'):
             engine.start()
@@ -271,11 +271,19 @@ elif st.session_state.page == 'scraper':
         if engine.phase in ('done', 'pushed', 'error') and st.button("🔄 تصفير", width='stretch'):
             st.cache_resource.clear()
             st.rerun()
+    with col_s5:
+        if engine.phase == 'idle' and st.button("⚡ مزامنة سريعة", width='stretch'):
+            engine._push_incremental("⚡ مزامنة سريعة")
+            st.cache_resource.clear()
+            st.rerun()
     
     st.divider()
     
     if engine.phase == 'idle':
-        st.info("اضغط 'ابدأ السحب' لبدء سحب كل الأنمي من AnimeLek.top وحفظه في GitHub")
+        if engine.message:
+            st.info(engine.message)
+        else:
+            st.info("اضغط 'ابدأ السحب' لبدء سحب كل الأنمي من AnimeLek.top\nأو '⚡ مزامنة سريعة' لمجرد تحديث الفهارس من GitHub بدون سحب")
     
     elif engine.phase == 'discover':
         st.markdown(f"**🔍 المرحلة 1/4:** اكتشاف الأنمي...")
