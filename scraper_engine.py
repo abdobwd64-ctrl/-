@@ -311,16 +311,24 @@ class ScraperEngine:
                     continue
                 with open(full, 'rb') as f:
                     raw = f.read()
-                if rel.endswith('.webp'):
+                rel_clean = rel.lstrip('/')
+                if rel_clean != rel:
+                    print(f'WARN: stripped leading slash: {rel} -> {rel_clean}', file=sys.stderr)
+                if rel_clean.endswith('.webp'):
                     content_b64 = base64.b64encode(raw).decode('ascii')
-                    files.append({'path': rel, 'content': content_b64, 'encoding': 'base64'})
+                    files.append({'path': rel_clean, 'content': content_b64, 'encoding': 'base64'})
                 else:
                     try:
                         text = raw.decode('utf-8')
                     except UnicodeDecodeError:
                         text = raw.decode('cp1256', errors='replace')
-                    files.append({'path': rel, 'content': text, 'encoding': 'utf-8'})
+                    files.append({'path': rel_clean, 'content': text, 'encoding': 'utf-8'})
             self._dirty.clear()
+
+            if not files:
+                self.message = '⚠️ لا توجد ملفات جديدة للرفع'
+                self._error_count = 0
+                return
 
             blobs = []
             for f in files:
@@ -737,7 +745,7 @@ class ScraperEngine:
         for root, dirs, files in os.walk(DATA):
             for fn in files:
                 full = os.path.join(root, fn)
-                rel = os.path.relpath(full, DIR).replace('\\', '/')
+                rel = os.path.relpath(full, DIR).replace('\\', '/').lstrip('/')
                 with open(full, 'rb') as f:
                     raw = f.read()
                 if rel.endswith('.webp'):
@@ -748,6 +756,11 @@ class ScraperEngine:
                     except UnicodeDecodeError:
                         text = raw.decode('cp1256', errors='replace')
                     files_to_push.append({'path': rel, 'content': text, 'encoding': 'utf-8'})
+
+        if not files_to_push:
+            self.message = '⚠️ لا توجد ملفات للرفع'
+            self.phase = 'done'
+            return
 
         blobs = []
         for f in files_to_push:
