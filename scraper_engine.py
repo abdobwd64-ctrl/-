@@ -95,6 +95,8 @@ class ScraperEngine:
         if self._thread and self._thread.is_alive():
             return
         self._stop = False
+        self.start_time = time.time()
+        self.phase = 'discover'
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -102,6 +104,8 @@ class ScraperEngine:
         if self._thread and self._thread.is_alive():
             return
         self._stop = False
+        self.start_time = time.time()
+        self.phase = 'check'
         self._thread = threading.Thread(target=self._run_check, daemon=True)
         self._thread.start()
 
