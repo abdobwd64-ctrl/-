@@ -346,16 +346,18 @@ class ScraperEngine:
                     key=lambda x: self._parse_arabic_date(x.get('date', '')), reverse=True)[:5]
                 for ep in sorted_eps:
                     d = ep.get('date', '')
+                    sa = ep.get('saved_at', '')
                     latest.append({
                         'anime_id': ad['id'], 'anime_title': ad['title'],
                         'anime_poster': ad['poster'], 'episode': ep['number'],
                         'date': d,
                         'date_sort': self._parse_arabic_date(d),
+                        'saved_at': sa,
                     })
             score = len(ad.get('episodes', [])) + len(ad.get('genres', []))
             popular.append({**info, 'score': score})
 
-        latest.sort(key=lambda x: x.get('date_sort', ''), reverse=True)
+        latest.sort(key=lambda x: (x.get('date_sort', ''), x.get('saved_at', '')), reverse=True)
         popular.sort(key=lambda x: x['score'], reverse=True)
 
         total_eps = sum(len(p.get('episodes', [])) for p in index_list) if False else 0
@@ -624,8 +626,9 @@ class ScraperEngine:
         if to_scrape:
             with ThreadPoolExecutor(max_workers=self.parallel) as ex:
                 def _scrape_ep(ep_num, ep, ep_url):
+                    now = datetime.utcnow().isoformat()
                     if not ep_url:
-                        return {'number': ep_num, 'title': ep.get('title', ''), 'date': '', 'servers': [], 'downloads': []}
+                        return {'number': ep_num, 'title': ep.get('title', ''), 'date': '', 'servers': [], 'downloads': [], 'saved_at': now}
                     try:
                         srv, pub_date = get_episode_servers(ep_url)
                         dls = get_episode_downloads(ep_url)
@@ -644,6 +647,7 @@ class ScraperEngine:
                         'servers': [{'name': s['name'], 'embed_url': s['embed_url']} for s in srv],
                         'downloads': [{'server': d['server'], 'quality': d['quality'],
                                         'language': d['language'], 'url': d['url']} for d in dls],
+                        'saved_at': now,
                     }
                 for i, f in enumerate(as_completed([ex.submit(_scrape_ep, num, e, u) for num, e, u in to_scrape])):
                     eps_data.append(f.result())
@@ -725,6 +729,7 @@ class ScraperEngine:
                             'servers': [{'name': s['name'], 'embed_url': s['embed_url']} for s in srv],
                             'downloads': [{'server': d['server'], 'quality': d['quality'],
                                             'language': d['language'], 'url': d['url']} for d in dls],
+                            'saved_at': datetime.utcnow().isoformat(),
                         }],
                         'last_updated': datetime.utcnow().isoformat(),
                     }
@@ -751,6 +756,7 @@ class ScraperEngine:
                         'servers': [{'name': s['name'], 'embed_url': s['embed_url']} for s in srv],
                         'downloads': [{'server': d['server'], 'quality': d['quality'],
                                         'language': d['language'], 'url': d['url']} for d in dls],
+                        'saved_at': datetime.utcnow().isoformat(),
                     })
                     old_data['last_updated'] = datetime.utcnow().isoformat()
                     with open(fp, 'w', encoding='utf-8') as f:
@@ -867,15 +873,19 @@ class ScraperEngine:
                 latest_eps = sorted(valid_eps,
                     key=lambda x: _parse(x.get('date', '')), reverse=True)[:5]
                 for ep in latest_eps:
+                    d = ep.get('date', '')
+                    sa = ep.get('saved_at', '')
                     latest.append({
                         'anime_id': ad['id'], 'anime_title': ad['title'],
                         'anime_poster': ad['poster'], 'episode': ep['number'],
-                        'date': ep.get('date', ''),
+                        'date': d,
+                        'date_sort': _parse(d),
+                        'saved_at': sa,
                     })
             score = len(ad.get('episodes', [])) + len(ad.get('genres', []))
             popular.append({**info, 'score': score})
 
-        latest.sort(key=lambda x: x.get('date', ''), reverse=True)
+        latest.sort(key=lambda x: (x.get('date_sort', ''), x.get('saved_at', '')), reverse=True)
         popular.sort(key=lambda x: x['score'], reverse=True)
 
         for name, data in [

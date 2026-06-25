@@ -87,16 +87,18 @@ for fn in os.listdir(anime_dir):
             key=lambda x: parse_arabic_date(x.get('date', '')), reverse=True)[:5]
         for ep in sorted_eps:
             d = ep.get('date', '')
+            sa = e.get('saved_at', '')
             latest.append({
                 'anime_id': ad['id'], 'anime_title': ad['title'],
                 'anime_poster': ad['poster'], 'episode': ep['number'],
                 'date': d,
                 'date_sort': parse_arabic_date(d),
+                'saved_at': sa,
             })
     score = len(ad.get('episodes', [])) + len(ad.get('genres', []))
     popular.append({**info, 'score': score})
 
-latest.sort(key=lambda x: x.get('date_sort', ''), reverse=True)
+latest.sort(key=lambda x: (x.get('date_sort', ''), x.get('saved_at', '')), reverse=True)
 popular.sort(key=lambda x: x['score'], reverse=True)
 
 total_eps = 0
