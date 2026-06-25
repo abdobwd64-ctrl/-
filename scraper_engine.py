@@ -129,6 +129,82 @@ class ScraperEngine:
             self.message = str(e)
             print(f'[خطأ] {e}', file=sys.stderr)
 
+    def _log_failed_anime(self, aid, name, url, error):
+        fp = os.path.join(DATA, 'failed_anime.json')
+        fails = []
+        if os.path.exists(fp):
+            try:
+                fails = json.load(open(fp, encoding='utf-8'))
+            except:
+                fails = []
+        fails.append({
+            'id': aid, 'name': name, 'url': url,
+            'error': str(error)[:200],
+            'timestamp': datetime.utcnow().isoformat()
+        })
+        with open(fp, 'w', encoding='utf-8') as f:
+            json.dump(fails, f, ensure_ascii=False, indent=2)
+        self._mark_dirty(fp)
+        self._push_failed_log()
+
+    def _push_failed_log(self):
+        fp = os.path.join(DATA, 'failed_anime.json')
+        if not os.path.exists(fp):
+            return
+        if not self.gh_token:
+            return
+        headers = {'Authorization': f'token {self.gh_token}', 'Accept': 'application/vnd.github.v3+json'}
+        api = 'https://api.github.com'
+        repo = 'abdobwd64-ctrl/anime_scraper'
+        branch = 'main'
+        for attempt in range(3):
+            try:
+                ref = requests.get(f'{api}/repos/{repo}/git/refs/heads/{branch}', headers=headers).json()
+                latest = ref['object']['sha']
+                base = requests.get(f'{api}/repos/{repo}/git/commits/{latest}', headers=headers).json()['tree']['sha']
+                import base64
+                with open(fp, 'rb') as f:
+                    raw = f.read()
+                text = raw.decode('utf-8')
+                br = requests.post(f'{api}/repos/{repo}/git/blobs',
+                    headers=headers, json={'content': text, 'encoding': 'utf-8'})
+                if br.status_code != 201:
+                    raise Exception(f'blob: {br.status_code} {br.text[:100]}')
+                tr = requests.post(f'{api}/repos/{repo}/git/trees',
+                    headers=headers, json={'base_tree': base, 'tree': [{'path': 'data/failed_anime.json', 'sha': br.json()['sha'], 'mode': '100644', 'type': 'blob'}]})
+                if tr.status_code != 201:
+                    raise Exception(f'tree: {tr.status_code} {tr.text[:100]}')
+                now = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+                cr = requests.post(f'{api}/repos/{repo}/git/commits',
+                    headers=headers, json={'message': f'تحديث سجل الأخطاء — {now}', 'tree': tr.json()['sha'], 'parents': [latest]})
+                if cr.status_code != 201:
+                    raise Exception(f'commit: {cr.status_code} {cr.text[:100]}')
+                requests.patch(f'{api}/repos/{repo}/git/refs/heads/{branch}',
+                    headers=headers, json={'sha': cr.json()['sha'], 'force': False})
+                return
+            except Exception as e:
+                print(f'[فشل-سجل] {e}', file=sys.stderr)
+                if '403' in str(e) and 'rate limit' in str(e).lower():
+                    self.message = '⏳ حد API - انتظار 1.5 ساعة قبل رفع سجل الأخطاء...'
+                    for _ in range(5400):
+                        if self._stop: return
+                        time.sleep(1)
+                    continue
+                return
+
+    def _handle_github_error(self, e, action, headers, api, repo, branch):
+        err_str = str(e)
+        if '403' in err_str and ('rate limit' in err_str.lower() or 'API rate limit' in err_str):
+            self.message = '⏳ تم تجاوز حد GitHub API — انتظار 1.5 ساعة...'
+            print(f'[GitHub] Rate limit reached during {action}, waiting 90 minutes...', file=sys.stderr)
+            for _ in range(5400):
+                if self._stop:
+                    return False
+                time.sleep(1)
+            print(f'[GitHub] Retrying {action} after rate limit wait...', file=sys.stderr)
+            return True
+        return False
+
     def _discover(self):
         self.phase = 'discover'
         self.message = 'جاري اكتشاف الأنمي...'
@@ -189,6 +265,8 @@ class ScraperEngine:
                         self._error_count += 1
                         self.message = f'❌ {anime["name"][:30]} فشل'
                         print(f'[فشل] {anime["name"][:30]}', file=sys.stderr)
+                        aid = anime['url'].rstrip('/').split('/')[-1]
+                        self._log_failed_anime(aid, anime['name'], anime['url'], 'فشل سحب التفاصيل')
                     elif ad == 'skipped':
                         self._error_count = 0
                         self.message = f'⏭ {anime["name"][:30]} مكتمل'
@@ -208,6 +286,8 @@ class ScraperEngine:
                     self._error_count += 1
                     self.message = f'فشل: {anime["name"][:30]} - {str(e)[:60]}'
                     print(f'[فشل] {anime["name"][:30]}: {e}', file=sys.stderr)
+                    aid = anime['url'].rstrip('/').split('/')[-1]
+                    self._log_failed_anime(aid, anime['name'], anime['url'], str(e))
                 return None
         with ThreadPoolExecutor(max_workers=self.parallel) as executor:
             list(executor.map(_scrape_wrapper, self._animes))
@@ -382,75 +462,78 @@ class ScraperEngine:
         with self._dirty_lock:
             for idx_name in ('latest.json', 'all-animes.json', 'popular.json', 'meta.json'):
                 self._dirty.add(f'data/{idx_name}')
-        self.message = f'🔄 رفع إلى GitHub...'
         headers = {'Authorization': f'token {self.gh_token}', 'Accept': 'application/vnd.github.v3+json'}
         api = 'https://api.github.com'
         repo = 'abdobwd64-ctrl/anime'
         branch = 'main'
 
-        try:
-            ref = requests.get(f'{api}/repos/{repo}/git/refs/heads/{branch}', headers=headers).json()
-            latest = ref['object']['sha']
-            base = requests.get(f'{api}/repos/{repo}/git/commits/{latest}', headers=headers).json()['tree']['sha']
+        for _ in range(3):
+            try:
+                ref = requests.get(f'{api}/repos/{repo}/git/refs/heads/{branch}', headers=headers).json()
+                latest = ref['object']['sha']
+                base = requests.get(f'{api}/repos/{repo}/git/commits/{latest}', headers=headers).json()['tree']['sha']
 
-            import base64
-            with self._dirty_lock:
-                dirty_snapshot = sorted(self._dirty)
-                self._dirty.clear()
-            files = []
-            for rel in dirty_snapshot:
-                full = os.path.join(DIR, rel)
-                if not os.path.exists(full):
-                    continue
-                with open(full, 'rb') as f:
-                    raw = f.read()
-                rel_clean = rel.lstrip('/')
-                if rel_clean != rel:
-                    print(f'WARN: stripped leading slash: {rel} -> {rel_clean}', file=sys.stderr)
-                if rel_clean.endswith('.webp'):
-                    content_b64 = base64.b64encode(raw).decode('ascii')
-                    files.append({'path': rel_clean, 'content': content_b64, 'encoding': 'base64'})
-                else:
-                    try:
-                        text = raw.decode('utf-8')
-                    except UnicodeDecodeError:
-                        text = raw.decode('cp1256', errors='replace')
-                    files.append({'path': rel_clean, 'content': text, 'encoding': 'utf-8'})
+                import base64
+                with self._dirty_lock:
+                    dirty_snapshot = sorted(self._dirty)
+                    self._dirty.clear()
+                files = []
+                for rel in dirty_snapshot:
+                    full = os.path.join(DIR, rel)
+                    if not os.path.exists(full):
+                        continue
+                    with open(full, 'rb') as f:
+                        raw = f.read()
+                    rel_clean = rel.lstrip('/')
+                    if rel_clean != rel:
+                        print(f'WARN: stripped leading slash: {rel} -> {rel_clean}', file=sys.stderr)
+                    if rel_clean.endswith('.webp'):
+                        content_b64 = base64.b64encode(raw).decode('ascii')
+                        files.append({'path': rel_clean, 'content': content_b64, 'encoding': 'base64'})
+                    else:
+                        try:
+                            text = raw.decode('utf-8')
+                        except UnicodeDecodeError:
+                            text = raw.decode('cp1256', errors='replace')
+                        files.append({'path': rel_clean, 'content': text, 'encoding': 'utf-8'})
 
-            if not files:
-                self.message = '⚠️ لا توجد ملفات جديدة للرفع'
+                if not files:
+                    self.message = '⚠️ لا توجد ملفات جديدة للرفع'
+                    self._error_count = 0
+                    return
+
+                blobs = []
+                for f in files:
+                    br = requests.post(f'{api}/repos/{repo}/git/blobs',
+                        headers=headers, json={'content': f['content'], 'encoding': f['encoding']})
+                    if br.status_code != 201:
+                        raise Exception(f'blob {f["path"]}: {br.status_code} {br.text[:100]}')
+                    blobs.append({'path': f['path'], 'sha': br.json()['sha'], 'mode': '100644', 'type': 'blob'})
+
+                tr = requests.post(f'{api}/repos/{repo}/git/trees',
+                    headers=headers, json={'base_tree': base, 'tree': blobs})
+                if tr.status_code != 201:
+                    paths = [b['path'] for b in blobs]
+                    raise Exception(f'tree: {tr.status_code} {tr.text[:300]} | paths: {paths[:10]}')
+                now = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+                cr = requests.post(f'{api}/repos/{repo}/git/commits',
+                    headers=headers, json={
+                        'message': f'{msg} — {now}',
+                        'tree': tr.json()['sha'], 'parents': [latest],
+                    })
+                if cr.status_code != 201:
+                    raise Exception(f'commit: {cr.status_code} {cr.text[:100]}')
+                requests.patch(f'{api}/repos/{repo}/git/refs/heads/{branch}',
+                    headers=headers, json={'sha': cr.json()['sha'], 'force': False})
                 self._error_count = 0
                 return
-
-            blobs = []
-            for f in files:
-                br = requests.post(f'{api}/repos/{repo}/git/blobs',
-                    headers=headers, json={'content': f['content'], 'encoding': f['encoding']})
-                if br.status_code != 201:
-                    raise Exception(f'blob {f["path"]}: {br.status_code} {br.text[:100]}')
-                blobs.append({'path': f['path'], 'sha': br.json()['sha'], 'mode': '100644', 'type': 'blob'})
-
-            tr = requests.post(f'{api}/repos/{repo}/git/trees',
-                headers=headers, json={'base_tree': base, 'tree': blobs})
-            if tr.status_code != 201:
-                paths = [b['path'] for b in blobs]
-                raise Exception(f'tree: {tr.status_code} {tr.text[:300]} | paths: {paths[:10]}')
-            now = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
-            cr = requests.post(f'{api}/repos/{repo}/git/commits',
-                headers=headers, json={
-                    'message': f'{msg} — {now}',
-                    'tree': tr.json()['sha'], 'parents': [latest],
-                })
-            if cr.status_code != 201:
-                raise Exception(f'commit: {cr.status_code} {cr.text[:100]}')
-            requests.patch(f'{api}/repos/{repo}/git/refs/heads/{branch}',
-                headers=headers, json={'sha': cr.json()['sha'], 'force': False})
-            self._error_count = 0
-        except Exception as e:
-            err = f'خطأ في الرفع: {e}'
-            self.message = err
-            print(err, file=sys.stderr)
-            self._error_count += 1
+            except Exception as e:
+                print(f'[رفع-خطأ] {e}', file=sys.stderr)
+                if self._handle_github_error(e, 'push_incremental', headers, api, repo, branch):
+                    continue
+                self.message = f'خطأ في الرفع: {e}'
+                self._error_count += 1
+                break
 
     def _download_poster(self, aid, poster_url):
         if not poster_url or not poster_url.startswith('http'):
@@ -828,73 +911,87 @@ class ScraperEngine:
         self._sync_index_from_github()
         self._update_indexes()
         
-        self.message = 'جاري الرفع إلى GitHub...'
         headers = {'Authorization': f'token {self.gh_token}', 'Accept': 'application/vnd.github.v3+json'}
         api = 'https://api.github.com'
         repo = 'abdobwd64-ctrl/anime'
         branch = 'main'
-        
-        ref_r = requests.get(f'{api}/repos/{repo}/git/refs/heads/{branch}', headers=headers)
-        if ref_r.status_code != 200:
-            self.message = f'فشل الوصول للمستودع: {ref_r.status_code}'
-            self.phase = 'done'
-            return
-        latest_commit = ref_r.json()['object']['sha']
 
-        commit_r = requests.get(f'{api}/repos/{repo}/git/commits/{latest_commit}', headers=headers)
-        base_tree = commit_r.json()['tree']['sha']
+        for attempt in range(3):
+            self.message = f'🔄 رفع إلى GitHub...'
+            try:
+                ref_r = requests.get(f'{api}/repos/{repo}/git/refs/heads/{branch}', headers=headers)
+                if ref_r.status_code != 200:
+                    if self._handle_github_error(Exception(f'{ref_r.status_code} {ref_r.text[:100]}'), 'push_ref', headers, api, repo, branch):
+                        continue
+                    self.message = f'فشل الوصول للمستودع: {ref_r.status_code}'
+                    self.phase = 'done'
+                    return
+                latest_commit = ref_r.json()['object']['sha']
 
-        import base64
-        files_to_push = []
-        for root, dirs, files in os.walk(DATA):
-            for fn in files:
-                full = os.path.join(root, fn)
-                rel = os.path.relpath(full, DIR).replace('\\', '/').lstrip('/')
-                with open(full, 'rb') as f:
-                    raw = f.read()
-                if rel.endswith('.webp'):
-                    files_to_push.append({'path': rel, 'content': base64.b64encode(raw).decode('ascii'), 'encoding': 'base64'})
-                else:
-                    try:
-                        text = raw.decode('utf-8')
-                    except UnicodeDecodeError:
-                        text = raw.decode('cp1256', errors='replace')
-                    files_to_push.append({'path': rel, 'content': text, 'encoding': 'utf-8'})
+                commit_r = requests.get(f'{api}/repos/{repo}/git/commits/{latest_commit}', headers=headers)
+                base_tree = commit_r.json()['tree']['sha']
 
-        if not files_to_push:
-            self.message = '⚠️ لا توجد ملفات للرفع'
-            self.phase = 'done'
-            return
+                import base64
+                files_to_push = []
+                for root, dirs, files in os.walk(DATA):
+                    for fn in files:
+                        full = os.path.join(root, fn)
+                        rel = os.path.relpath(full, DIR).replace('\\', '/').lstrip('/')
+                        with open(full, 'rb') as f:
+                            raw = f.read()
+                        if rel.endswith('.webp'):
+                            files_to_push.append({'path': rel, 'content': base64.b64encode(raw).decode('ascii'), 'encoding': 'base64'})
+                        else:
+                            try:
+                                text = raw.decode('utf-8')
+                            except UnicodeDecodeError:
+                                text = raw.decode('cp1256', errors='replace')
+                            files_to_push.append({'path': rel, 'content': text, 'encoding': 'utf-8'})
 
-        blobs = []
-        for f in files_to_push:
-            blob_r = requests.post(f'{api}/repos/{repo}/git/blobs',
-                headers=headers, json={'content': f['content'], 'encoding': f['encoding']})
-            if blob_r.status_code != 201:
-                raise Exception(f'blob {f["path"]}: {blob_r.status_code} {blob_r.text[:100]}')
-            blobs.append({'path': f['path'], 'sha': blob_r.json()['sha'],
-                          'mode': '100644', 'type': 'blob'})
+                if not files_to_push:
+                    self.message = '⚠️ لا توجد ملفات للرفع'
+                    self.phase = 'done'
+                    return
 
-        tree_r = requests.post(f'{api}/repos/{repo}/git/trees',
-            headers=headers, json={'base_tree': base_tree, 'tree': blobs})
-        if tree_r.status_code != 201:
-            paths = [b['path'] for b in blobs[:10]]
-            self.message = f'فشل إنشاء tree: {tree_r.status_code} {tree_r.text[:200]} | paths: {paths}'
-            self.phase = 'done'
-            return
+                blobs = []
+                for f in files_to_push:
+                    blob_r = requests.post(f'{api}/repos/{repo}/git/blobs',
+                        headers=headers, json={'content': f['content'], 'encoding': f['encoding']})
+                    if blob_r.status_code != 201:
+                        raise Exception(f'blob {f["path"]}: {blob_r.status_code} {blob_r.text[:100]}')
+                    blobs.append({'path': f['path'], 'sha': blob_r.json()['sha'],
+                                  'mode': '100644', 'type': 'blob'})
 
-        now = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
-        commit_r = requests.post(f'{api}/repos/{repo}/git/commits',
-            headers=headers, json={
-                'message': f'🤖 تحديث بيانات الأنمي — {now}\n\n{self.done} أنمي · {self.total_eps} حلقة',
-                'tree': tree_r.json()['sha'], 'parents': [latest_commit],
-            })
-        if commit_r.status_code != 201:
-            self.message = f'فشل إنشاء commit'
-            self.phase = 'done'
-            return
+                tree_r = requests.post(f'{api}/repos/{repo}/git/trees',
+                    headers=headers, json={'base_tree': base_tree, 'tree': blobs})
+                if tree_r.status_code != 201:
+                    paths = [b['path'] for b in blobs[:10]]
+                    self.message = f'فشل إنشاء tree: {tree_r.status_code} {tree_r.text[:200]} | paths: {paths}'
+                    self.phase = 'done'
+                    return
 
-        requests.patch(f'{api}/repos/{repo}/git/refs/heads/{branch}',
-            headers=headers, json={'sha': commit_r.json()['sha'], 'force': False})
-        self.message = f'✅ تم رفع {len(files_to_push)} ملف إلى GitHub'
-        self.phase = 'pushed'
+                now = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+                commit_r = requests.post(f'{api}/repos/{repo}/git/commits',
+                    headers=headers, json={
+                        'message': f'🤖 تحديث بيانات الأنمي — {now}\n\n{self.done} أنمي · {self.total_eps} حلقة',
+                        'tree': tree_r.json()['sha'], 'parents': [latest_commit],
+                    })
+                if commit_r.status_code != 201:
+                    if self._handle_github_error(Exception(f'commit {commit_r.status_code} {commit_r.text[:100]}'), 'push_commit', headers, api, repo, branch):
+                        continue
+                    self.message = f'فشل إنشاء commit'
+                    self.phase = 'done'
+                    return
+
+                requests.patch(f'{api}/repos/{repo}/git/refs/heads/{branch}',
+                    headers=headers, json={'sha': commit_r.json()['sha'], 'force': False})
+                self.message = f'✅ تم رفع {len(files_to_push)} ملف إلى GitHub'
+                self.phase = 'pushed'
+                return
+            except Exception as e:
+                print(f'[رفع-خطأ] {e}', file=sys.stderr)
+                if self._handle_github_error(e, 'push_to_github', headers, api, repo, branch):
+                    continue
+                self.message = f'خطأ في الرفع: {e}'
+                self.phase = 'error'
+                return
