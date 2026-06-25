@@ -245,7 +245,7 @@ elif st.session_state.page == 'scraper':
     
     @st.cache_resource
     def get_engine():
-        return ScraperEngine(gh_token, parallel=3)
+        return ScraperEngine(gh_token, parallel=5)
     
     engine = get_engine()
     

@@ -237,7 +237,7 @@ class ScraperEngine:
                         known[r['url']] = r.get('name', r['url'].rstrip('/').split('/')[-1])
                 if p % 10 == 0:
                     self.message = f'صفحة {p}/{total_pages} — {len(known)} أنمي'
-                time.sleep(0.3)
+                time.sleep(0.1)
         except Exception as ex:
             print(f'[اكتشاف-خطأ] فشل سحب القائمة: {ex}', file=sys.stderr)
 
@@ -608,57 +608,42 @@ class ScraperEngine:
             eps_data.append(ep)
         self.ep_progress = len(eps_data)
 
+        to_scrape = []
         for idx, ep in enumerate(ep_list, 1):
             if self._stop: return None
             ep_num = str(ep.get('number', str(idx)))
             if ep_num in existing_eps:
                 continue
-            self.ep_progress = idx
-
             ep_url = ep.get('url', '')
-            if not ep_url:
-                eps_data.append({'number': ep_num, 'title': ep.get('title', ''),
-                                 'date': '', 'servers': [], 'downloads': []})
-                continue
+            to_scrape.append((ep_num, ep, ep_url))
 
-            try:
-                srv, pub_date = get_episode_servers(ep_url)
-                dls = get_episode_downloads(ep_url)
-            except:
-                srv, pub_date, dls = [], '', []
-
-            self.total_eps += 1
-            self.total_servers += len(srv)
-            self.total_dls += len(dls)
-            self.ep_servers = len(srv)
-            self.ep_dls = len(dls)
-
-            eps_data.append({
-                'number': ep_num,
-                'title': ep.get('title', ''),
-                'date': pub_date,
-                'servers': [{'name': s['name'], 'embed_url': s['embed_url']} for s in srv],
-                'downloads': [{'server': d['server'], 'quality': d['quality'],
-                                'language': d['language'], 'url': d['url']} for d in dls],
-            })
-
-            anime_data = {
-                'id': aid, 'title': det.get('title', name), 'url': url,
-                'poster': self._download_poster(aid, poster_url),
-                'status': det.get('status', ''), 'type': det.get('type', ''),
-                'episodes_count': det.get('episodes', str(total_on_site)),
-                'start_date': det.get('start_date', ''), 'season': det.get('season', ''),
-                'genres': det.get('genres', []), 'story': det.get('story', ''),
-                'episodes': eps_data,
-                'last_updated': datetime.utcnow().isoformat(),
-            }
-            with open(fp, 'w', encoding='utf-8') as f:
-                json.dump(anime_data, f, ensure_ascii=False, indent=2)
-            self._mark_dirty(fp)
-            if os.path.exists(poster_fp):
-                self._mark_dirty(poster_fp)
-            self._push_incremental(f'🎬 الحلقة {ep_num} — {name[:30]}')
-            time.sleep(DELAY)
+        if to_scrape:
+            with ThreadPoolExecutor(max_workers=self.parallel) as ex:
+                def _scrape_ep(ep_num, ep, ep_url):
+                    if not ep_url:
+                        return {'number': ep_num, 'title': ep.get('title', ''), 'date': '', 'servers': [], 'downloads': []}
+                    try:
+                        srv, pub_date = get_episode_servers(ep_url)
+                        dls = get_episode_downloads(ep_url)
+                    except:
+                        srv, pub_date, dls = [], '', []
+                    with self._lock:
+                        self.total_eps += 1
+                        self.total_servers += len(srv)
+                        self.total_dls += len(dls)
+                    self.ep_servers = len(srv)
+                    self.ep_dls = len(dls)
+                    return {
+                        'number': ep_num,
+                        'title': ep.get('title', ''),
+                        'date': pub_date,
+                        'servers': [{'name': s['name'], 'embed_url': s['embed_url']} for s in srv],
+                        'downloads': [{'server': d['server'], 'quality': d['quality'],
+                                        'language': d['language'], 'url': d['url']} for d in dls],
+                    }
+                for i, f in enumerate(as_completed([ex.submit(_scrape_ep, num, e, u) for num, e, u in to_scrape])):
+                    eps_data.append(f.result())
+                    self.ep_progress = len(eps_data)
 
         anime_data = {
             'id': aid, 'title': det.get('title', name), 'url': url,
@@ -798,7 +783,7 @@ class ScraperEngine:
                     self._error_count += 1
                     print(f'[فحص-خطأ] سيرفر: {old_data.get("title",aid)} حلقة {ep_num}: {ex3}', file=sys.stderr)
                     pass
-            time.sleep(DELAY)
+            time.sleep(0.15)
         self._push_incremental(f'🔄 فحص: {new_anime} أنمي + {new_eps} حلقة + {new_servers} سيرفر')
 
     def _run_check(self):
