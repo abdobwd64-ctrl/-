@@ -694,7 +694,15 @@ class ScraperEngine:
                         existing_eps[str(e.get('number', ''))] = e
             ep_num = ''
             if '/episode/' in ep_url:
-                ep_num = ep_url.rstrip('/').rsplit('-', 1)[-1]
+                m = re.search(r'(\d+)(?:/\s*|$)', ep.get('episode_name', ''))
+                if m:
+                    ep_num = m.group(1)
+                else:
+                    import urllib.parse
+                    decoded = urllib.parse.unquote(ep_url.rstrip('/').rsplit('-', 1)[-1])
+                    m2 = re.search(r'(\d+)', decoded)
+                    if m2:
+                        ep_num = m2.group(1)
             if not old_data:
                 ad = self._scrape_one({'url': anime_url, 'name': ep.get('anime_name', aid)})
                 if ad and isinstance(ad, dict):
@@ -705,7 +713,15 @@ class ScraperEngine:
                     continue
                 ep_num = ''
                 if '/episode/' in ep_url:
-                    ep_num = ep_url.rstrip('/').rsplit('-', 1)[-1]
+                    m = re.search(r'(\d+)(?:/\s*|$)', ep.get('episode_name', ''))
+                    if m:
+                        ep_num = m.group(1)
+                    else:
+                        import urllib.parse
+                        decoded = urllib.parse.unquote(ep_url.rstrip('/').rsplit('-', 1)[-1])
+                        m2 = re.search(r'(\d+)', decoded)
+                        if m2:
+                            ep_num = m2.group(1)
                 try:
                     srv, pub_date = get_episode_servers(ep_url)
                     dls = get_episode_downloads(ep_url)
